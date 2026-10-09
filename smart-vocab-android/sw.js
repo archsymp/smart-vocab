@@ -1,13 +1,14 @@
 /* 오프라인 동작용 서비스 워커.
  * 앱 파일을 고친 뒤 올릴 때는 아래 VERSION 숫자만 올리면 폰에 '업데이트' 안내가 뜹니다. */
-const VERSION = "sv-4.7.0";
+const VERSION = "sv-4.8.0";
 const FILES = [
   "./", "./index.html", "./core.js", "./app.js", "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/maskable-512.png",
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)));
+  // cache: "reload" → 브라우저에 남아 있는 예전 파일이 아니라 서버의 새 파일을 받아 저장
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((u) => new Request(u, { cache: "reload" })))));
 });
 
 self.addEventListener("activate", (e) => {

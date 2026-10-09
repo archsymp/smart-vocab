@@ -3,14 +3,20 @@
 (function (global) {
   "use strict";
 
-  const APP_VERSION = "v4.7-android";
+  const APP_VERSION = "v4.8-android";
   const EF_DEFAULT = 2.5, EF_MIN = 1.3, EF_MAX = 3.0;
   const EF_GAIN = 0.1, EF_PENALTY = 0.2;
   const RELEARN_REQUIRED = 3;
   const RELEARN_STEPS = [1, 3, 7];
   const FOCUS_MAX = 5.0;
   const CSV_FIELDS = ["Word", "Meaning", "Tests", "Correct", "Wrongs", "Interval", "EF",
-    "Reps", "Relearn", "Focus", "NextReview", "LastTested", "CreatedAt"];
+    "Reps", "Relearn", "Focus", "NextReview", "LastTested", "CreatedAt",
+    "Synonyms", "Antonyms", "Related", "Note"];
+  // 동의어·반의어·관련어는 ';'로 구분한 문자열, 메모는 자유 텍스트
+  const LIST_FIELDS = ["synonyms", "antonyms", "related"];
+  const EXTRA_FIELDS = [...LIST_FIELDS, "note"];
+  // 앱이 아직 모르는 CSV 열은 버리지 않고 w.extra = {열 이름: 값}에 보관 (나중 기능에서 사용)
+  const KNOWN_COLS = new Set([...CSV_FIELDS.map((c) => c.toLowerCase()), "단어", "뜻"]);
 
   // ── 숫자: Python round()와 같은 결과를 내기 위한 함수 ──
   function pyRound(x) {               // 정수 반올림, .5는 짝수 쪽 (Python과 동일)
@@ -72,6 +78,7 @@
       ef: EF_DEFAULT, interval: 0, reps: 0, relearn: 0, focus: 0.0,
       next_review: null, last_tested: null,
       created_at: createdAt || nowStrSec(),
+      synonyms: "", antonyms: "", related: "", note: "", extra: {},
     };
   }
 
@@ -104,8 +111,41 @@
     w.next_review = nd ? dateToStr(nd) : null;
     if (!w.last_tested) w.last_tested = null;
     if (!w.created_at) w.created_at = createdFallback || nowStrSec();
+    for (const f of LIST_FIELDS) w[f] = normList(w[f]);
+    w.note = String(w.note ?? "").trim();
+    w.extra = normExtra(w.extra);
     return w;
   }
+
+  /** 'a; b, c;;a' → 'a;b;c' (쉼표·세미콜론 모두 구분자로, 중복 제거) */
+  function normList(v) {
+    const out = [];
+    for (const t of String(v ?? "").split(/[;,]/)) { const x = t.trim(); if (x && !out.includes(x)) out.push(x); }
+    return out.join(";");
+  }
+  function normExtra(x) {
+    const out = {};
+    if (x && typeof x === "object" && !Array.isArray(x))
+      for (const [k, v] of Object.entries(x)) { const kk = String(k).trim(), vv = String(v ?? "").trim(); if (kk && vv) out[kk] = vv; }
+    return out;
+  }
+  /** 이미 있는 단어에 동의어 등을 보충 (목록은 합치고, 메모는 비어 있을 때만). 바뀌면 true */
+  function mergeExtras(w, extra) {
+    let changed = false;
+    for (const f of LIST_FIELDS) {
+      const merged = normList([w[f] || "", extra[f] || ""].join(";"));
+      if (merged !== (w[f] || "")) { w[f] = merged; changed = true; }
+    }
+    const note = String(extra.note || "").trim();
+    if (note && !(w.note || "").trim()) { w.note = note; changed = true; }
+    const ex = normExtra(extra.extra);
+    for (const [k, v] of Object.entries(ex)) {
+      if (!w.extra || typeof w.extra !== "object") w.extra = {};
+      if (!w.extra[k]) { w.extra[k] = v; changed = true; }
+    }
+    return changed;
+  }
+  function splitList(v) { return String(v || "").split(";").filter(Boolean); }
 
   function normalizeAll(words, now = new Date()) {
     const seen = new Set();
@@ -223,34 +263,47 @@
   /** CSV 텍스트 → {added, dup, bad}. 헤더가 있으면 건너뛰고, 내보내기 형식이면 기록 복원 */
   function parseCsvText(text, existingWords, now = new Date()) {
     let rows = parseCsvRows(text);
-    let headerMap = null;
+    let headerMap = null, headerRow = [];
     if (rows.length && rows[0].length && ["word", "단어"].includes(rows[0][0].trim().toLowerCase())) {
-      headerMap = {}; rows[0].forEach((h, i) => { headerMap[h.trim().toLowerCase()] = i; });
+      headerMap = {}; headerRow = rows[0].map((h) => h.trim());
+      rows[0].forEach((h, i) => { headerMap[h.trim().toLowerCase()] = i; });
       rows = rows.slice(1);
     }
     const seen = new Set(existingWords.map((w) => w.word));
-    const added = []; let dup = 0, bad = 0;
+    const existing = new Map(existingWords.map((w) => [w.word, w]));
+    const added = [], fills = []; let dup = 0, bad = 0;
+    const col = (row, name) => { const i = headerMap ? headerMap[name.toLowerCase()] : undefined; return i !== undefined && i < row.length ? row[i].trim() : ""; };
+    const unknownCols = headerMap ? Object.entries(headerMap).filter(([h]) => h && !KNOWN_COLS.has(h)) : [];
+    const extrasOf = (row) => {
+      const extra = {};
+      for (const [, i] of unknownCols) if (i < row.length && row[i].trim()) extra[headerRow[i]] = row[i].trim();
+      return { synonyms: col(row, "synonyms"), antonyms: col(row, "antonyms"), related: col(row, "related"), note: col(row, "note"), extra };
+    };
     for (const row of rows) {
       if (!row.length || row.every((c) => !c.trim())) continue;
       if (row.length < 2 || !row[0].trim() || !row[1].trim()) { bad++; continue; }
       const word = row[0].trim().toLowerCase(), meaning = row[1].trim();
-      if (seen.has(word)) { dup++; continue; }
+      if (seen.has(word)) {
+        dup++;
+        if (headerMap && existing.has(word)) fills.push([existing.get(word), extrasOf(row)]);  // 기존 단어 보충용
+        continue;
+      }
       seen.add(word);
       const w = newWord(word, meaning, nowStrSec(new Date(now.getTime() + added.length * 1000)));
       if (headerMap) {
-        const col = (name) => { const i = headerMap[name.toLowerCase()]; return i !== undefined && i < row.length ? row[i].trim() : ""; };
         const stats = { test_cnt: "Tests", correct_cnt: "Correct", wrong_cnt: "Wrongs", interval: "Interval", ef: "EF",
           reps: "Reps", relearn: "Relearn", focus: "Focus", next_review: "NextReview", last_tested: "LastTested", created_at: "CreatedAt" };
         for (const [k, name] of Object.entries(stats)) {
-          const v = col(name);
+          const v = col(row, name);
           if (v !== "") w[k] = v;
           else if (["correct_cnt", "reps", "relearn"].includes(k)) delete w[k];
         }
+        Object.assign(w, extrasOf(row));
         normalizeWord(w, w.created_at);
       }
       added.push(w);
     }
-    return { added, dup, bad };
+    return { added, dup, bad, fills };
   }
 
   function csvEscape(v) {
@@ -261,11 +314,15 @@
     return Number.isInteger(v) ? `${v}.0` : String(v);
   }
   function wordsToCsv(words) {
-    const lines = [CSV_FIELDS.join(",")];
+    const extraKeys = [];
+    for (const d of words) for (const k of Object.keys(d.extra || {})) if (!extraKeys.includes(k)) extraKeys.push(k);
+    const lines = [[...CSV_FIELDS, ...extraKeys].map(csvEscape).join(",")];
     for (const d of words) {
       lines.push([d.word, d.meaning, d.test_cnt || 0, d.correct_cnt || 0, d.wrong_cnt || 0, d.interval || 0,
         pyNum(d.ef ?? EF_DEFAULT), d.reps || 0, d.relearn || 0, pyNum(d.focus || 0),
-        d.next_review || "", d.last_tested || "", d.created_at || ""].map(csvEscape).join(","));
+        d.next_review || "", d.last_tested || "", d.created_at || "",
+        d.synonyms || "", d.antonyms || "", d.related || "", d.note || "",
+        ...extraKeys.map((k) => (d.extra || {})[k] || "")].map(csvEscape).join(","));
     }
     return "﻿" + lines.join("\r\n") + "\r\n";
   }
@@ -276,7 +333,7 @@
     newWord, normalizeWord, normalizeAll, parseWordsJson,
     isDue, isReviewDue, applyAnswer, applyPractice, errorRate,
     pickReviewWords, pickHighErrorWords, statusText,
-    parseCsvRows, parseCsvText, wordsToCsv,
+    parseCsvRows, parseCsvText, wordsToCsv, normList, mergeExtras, splitList, EXTRA_FIELDS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.VocabCore = api;

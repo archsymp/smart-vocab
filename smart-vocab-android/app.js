@@ -150,11 +150,16 @@
       stopTest();
       return;
     }
+    if (S.screen === "paste" && S.paste.preview) {   // 미리보기에서 뒤로가기 → 입력 화면 (붙여넣은 텍스트 유지)
+      history.pushState({ sv: 1 }, "");
+      S.paste.preview = null; render();
+      return;
+    }
     S.screen = "home"; render();
   });
 
   function render() {
-    ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData })[S.screen]();
+    ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData, paste: renderPaste })[S.screen]();
   }
 
   // ─────────────────────────────────────────
@@ -209,6 +214,7 @@
       </div>
 
       <div class="section-label">관리</div>
+      <button class="btn soft" data-go="paste" style="margin-bottom:10px">📋 붙여넣기로 단어 추가</button>
       <div class="row2">
         <button class="btn soft" data-go="manage">단어 관리</button>
         <button class="btn soft" data-go="data">백업 · 가져오기</button>
@@ -313,6 +319,7 @@
           <div class="compare">
             <div class="k">내 입력</div><div class="mine">${t.input ? esc(t.input) : "(미입력)"}</div>
             <div class="k">실제 뜻</div><div class="real">${esc(w.meaning)}</div>
+            ${extrasHtml(w)}
           </div>
         </div>
         <div class="judge">
@@ -326,6 +333,14 @@
       qs("#no").addEventListener("click", () => judge(false));
     }
     qs("#stop").addEventListener("click", stopTest);
+  }
+
+  const EXTRA_LABELS = { synonyms: "동의어", antonyms: "반의어", related: "관련어" };
+  function extrasHtml(w) {
+    const rows = Object.entries(EXTRA_LABELS).filter(([f]) => w[f])
+      .map(([f, l]) => `<div class="ex"><span class="exk">${l}</span>${C.splitList(w[f]).map(esc).join(", ")}</div>`);
+    if (w.note) rows.push(`<div class="ex"><span class="exk">메모</span>${esc(w.note)}</div>`);
+    return rows.length ? `<div class="extras">${rows.join("")}</div>` : "";
   }
 
   document.addEventListener("keydown", (e) => {
@@ -460,6 +475,11 @@
       <form id="ef" autocomplete="off">
         <label class="field"><span>단어</span><input id="ew" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next" value="${w ? esc(w.word) : ""}"></label>
         <label class="field"><span>뜻</span><input id="em" lang="ko" enterkeyhint="done" value="${w ? esc(w.meaning) : ""}"></label>
+        <details class="more" ${w && C.EXTRA_FIELDS.some((f) => w[f]) ? "open" : ""}>
+          <summary>동의어 · 반의어 · 관련어 · 메모</summary>
+          ${Object.entries(EXTRA_LABELS).map(([f, l]) => `<label class="field"><span>${l} <small>(쉼표로 구분)</small></span><input data-x="${f}" autocapitalize="off" autocorrect="off" spellcheck="false" value="${w ? esc(C.splitList(w[f]).join(", ")) : ""}"></label>`).join("")}
+          <label class="field"><span>메모</span><input data-x="note" lang="ko" value="${w ? esc(w.note || "") : ""}"></label>
+        </details>
         ${detail}
         <div class="row2"><button type="button" class="btn" id="ecancel">닫기</button><button class="btn primary">${w ? "수정 저장" : "추가"}</button></div>
         ${w ? `<div class="row2" style="margin-top:10px"><button type="button" class="btn small danger" id="ereset">기록 초기화</button><button type="button" class="btn small danger" id="edel">삭제</button></div>` : ""}
@@ -475,20 +495,23 @@
 
     guardSubmit(qs("#ef", ov), [$w, $m], async () => {
       const word = $w.value.trim().toLowerCase(), meaning = $m.value.trim();
+      const extras = {};
+      ov.querySelectorAll("[data-x]").forEach((i) => { extras[i.dataset.x] = i.dataset.x === "note" ? i.value.trim() : C.normList(i.value); });
+      const clearInputs = () => { $w.value = ""; $m.value = ""; ov.querySelectorAll("[data-x]").forEach((i) => { i.value = ""; }); $w.focus(); };
       if (!word || !meaning) return toast("단어와 뜻을 모두 입력해 주세요");
       const dup = S.words.find((x) => x.word === word && x.id !== (w && w.id));
       if (dup) {
         if (w) return alertBox("중복", `'${word}'은(는) 이미 다른 항목으로 있습니다.\n(뜻: ${dup.meaning})`);
         if (await confirmBox("중복 단어", `'${word}'은(는) 이미 있습니다.\n기존 뜻: ${dup.meaning}\n\n입력한 뜻으로 기존 단어를 수정할까요?\n(학습 기록은 유지됩니다)`, "수정", "취소")) {
-          dup.meaning = meaning; await save(); toast(`수정됨: ${word}`);
-          $w.value = ""; $m.value = ""; $w.focus();
+          dup.meaning = meaning; C.mergeExtras(dup, extras); await save(); toast(`수정됨: ${word}`);
+          clearInputs();
         }
         return;
       }
-      if (w) { w.word = word; w.meaning = meaning; await save(); toast("저장했습니다"); close(); }
+      if (w) { w.word = word; w.meaning = meaning; Object.assign(w, extras); await save(); toast("저장했습니다"); close(); }
       else {
-        S.words.unshift(C.newWord(word, meaning)); await save(); toast(`추가됨: ${word}`);
-        $w.value = ""; $m.value = ""; $w.focus();          // 연속 입력
+        S.words.unshift(Object.assign(C.newWord(word, meaning), extras)); await save(); toast(`추가됨: ${word}`);
+        clearInputs();          // 연속 입력
         S.manage.redraw && S.manage.redraw();
         const h = qs(".topbar small"); if (h) h.textContent = S.words.length;
       }
@@ -532,10 +555,10 @@
     if (ok) { S.meta.lastBackup = C.nowStr(); await saveMeta(); toast("백업 파일을 만들었습니다"); renderData(); }
   }
 
-  function pickFile() {
+  function pickFile(multiple = false) {
     return new Promise((resolve) => {
-      const inp = document.createElement("input"); inp.type = "file";
-      inp.addEventListener("change", () => resolve(inp.files[0] || null));
+      const inp = document.createElement("input"); inp.type = "file"; inp.multiple = multiple;
+      inp.addEventListener("change", () => resolve(multiple ? [...inp.files] : inp.files[0] || null));
       inp.click();
     });
   }
@@ -566,13 +589,116 @@
   }
 
   async function importCsv() {
-    const f = await pickFile(); if (!f) return;
-    const text = await readText(f);
-    if (text === null) return alertBox("불러오기 실패", "파일 인코딩을 읽을 수 없습니다. (UTF-8 또는 CP949로 저장해 주세요)");
-    const { added, dup, bad } = C.parseCsvText(text, S.words);
-    if (added.length) { S.words = S.words.concat(added); await save(); }
-    alertBox("가져오기 결과", `추가: ${added.length}개\n중복이라 건너뜀: ${dup}개${bad ? `\n형식 오류로 건너뜀: ${bad}줄` : ""}`);
+    const files = await pickFile(true); if (!files || !files.length) return;
+    files.sort((a, b) => a.name.localeCompare(b.name));          // 날짜별 파일이면 날짜 순서대로
+    const lines = []; let totalAdded = 0, totalFilled = 0;
+    for (const f of files) {
+      const text = await readText(f);
+      if (text === null) { lines.push(`• ${f.name}: 인코딩을 읽을 수 없음`); continue; }
+      const { added, dup, bad, fills } = C.parseCsvText(text, S.words);
+      let filled = 0;
+      for (const [w, extra] of fills) if (C.mergeExtras(w, extra)) filled++;   // 학습 기록·뜻은 그대로, 동의어 등만 보충
+      S.words = S.words.concat(added);
+      totalAdded += added.length; totalFilled += filled;
+      lines.push(`• ${f.name}: 추가 ${added.length}, 이미 있음 ${dup}${filled ? ` (보충 ${filled})` : ""}${bad ? `, 오류 ${bad}줄` : ""}`);
+    }
+    if (totalAdded || totalFilled) await save();
+    alertBox("가져오기 결과", `추가: ${totalAdded}개 · 동의어 등 보충: ${totalFilled}개\n\n${lines.join("\n")}`);
     renderData();
+  }
+
+  // ─────────────────────────────────────────
+  // 붙여넣기로 단어 추가 (Claude가 정리해 준 텍스트 → 미리보기 → 추가)
+  // ─────────────────────────────────────────
+  S.paste = { text: "", preview: null };
+
+  function buildPreview(text) {
+    const { added, dup, bad, fills } = C.parseCsvText(text, S.words);
+    const rows = added.map((w) => ({ kind: "new", w, on: true }));       // (가) 동의어 단어도 기본으로 포함
+    for (const [w, extra] of fills) {
+      const probe = JSON.parse(JSON.stringify(w));
+      rows.push({ kind: C.mergeExtras(probe, extra) ? "fill" : "same", w, extra, on: true, preview: probe });
+    }
+    return { rows, dup, bad };
+  }
+
+  function renderPaste() {
+    const P = S.paste;
+    if (!P.preview) {
+      $app.innerHTML = `
+        <div class="topbar"><button class="icon-btn" data-go="home">← 홈</button><h1>붙여넣기로 단어 추가</h1></div>
+        <p class="desc" style="margin:0 4px 10px">Claude가 정리해 준 단어 텍스트를 그대로 붙여넣으세요. 추가하기 전에 미리보기로 확인할 수 있어요.</p>
+        <textarea id="ptext" class="paste-box" spellcheck="false" autocapitalize="off" placeholder="word,meaning,synonyms,antonyms,related,note&#10;swift,신속한,prompt,,,&#10;prompt,&quot;신속한, 즉각적인&quot;,swift,,,">${esc(P.text)}</textarea>
+        <div class="row2" style="margin-top:10px">
+          <button class="btn" id="pclip">클립보드 붙여넣기</button>
+          <button class="btn primary" id="pgo">미리보기</button>
+        </div>`;
+      bindGo();
+      const $t = qs("#ptext");
+      $t.addEventListener("input", () => { P.text = $t.value; });
+      qs("#pclip").addEventListener("click", async () => {
+        try { const t = await navigator.clipboard.readText(); if (t) { $t.value = P.text = t; toast("붙여넣었습니다"); } else toast("클립보드가 비어 있어요"); }
+        catch (e) { toast("클립보드를 읽을 수 없어요. 입력칸을 길게 눌러 붙여넣어 주세요"); $t.focus(); }
+      });
+      qs("#pgo").addEventListener("click", () => {
+        P.text = $t.value;
+        if (!P.text.trim()) return toast("붙여넣은 내용이 없어요");
+        const pv = buildPreview(P.text);
+        if (!pv.rows.length) return alertBox("읽을 수 있는 단어가 없어요", `단어와 뜻이 쉼표로 구분된 텍스트인지 확인해 주세요.${pv.bad ? `\n(형식 오류 ${pv.bad}줄)` : ""}`);
+        P.preview = pv; renderPaste(); window.scrollTo(0, 0);
+      });
+      return;
+    }
+
+    const pv = P.preview;
+    const nNew = pv.rows.filter((r) => r.kind === "new").length, nFill = pv.rows.filter((r) => r.kind === "fill").length;
+    const extraLine = (w) => [["synonyms", "동"], ["antonyms", "반"], ["related", "관"]].filter(([f]) => w[f])
+      .map(([f, l]) => `<span class="tag">${l}</span>${C.splitList(w[f]).map(esc).join(", ")}`).join(" ");
+    $app.innerHTML = `
+      <div class="topbar"><button class="icon-btn" id="pback">← 다시 입력</button><h1>미리보기</h1></div>
+      <div class="notice" style="margin:0 0 10px">새 단어 ${nNew}개${nFill ? ` · 이미 있는 단어 ${nFill}개에 동의어 등 보충` : ""}${pv.bad ? ` · 형식 오류 ${pv.bad}줄 제외` : ""}${!nNew && !nFill ? " · 반영할 내용이 없어요" : ""}</div>
+      <div class="list" id="plist">${pv.rows.map((r, i) => r.kind === "same" ? "" : r.kind === "new" ? `
+        <div class="item prow"><label class="pcheck"><input type="checkbox" data-i="${i}" ${r.on ? "checked" : ""}>
+          <span class="w">${esc(r.w.word)}</span><span class="badge new">새 단어</span></label>
+          <input class="pmean" data-m="${i}" lang="ko" value="${esc(r.w.meaning)}" aria-label="${esc(r.w.word)} 뜻">
+          ${extraLine(r.w) ? `<div class="meta">${extraLine(r.w)}</div>` : ""}${r.w.note ? `<div class="meta">메모 · ${esc(r.w.note)}</div>` : ""}</div>` : `
+        <div class="item prow ${r.kind === "same" ? "dim" : ""}"><label class="pcheck"><input type="checkbox" data-i="${i}" ${r.on && r.kind === "fill" ? "checked" : ""} ${r.kind === "same" ? "disabled" : ""}>
+          <span class="w">${esc(r.w.word)}</span><span class="badge">${r.kind === "fill" ? "이미 있음 · 보충" : "이미 있음 · 변경 없음"}</span></label>
+          <div class="m">${esc(r.w.meaning)} <small style="color:var(--text-3)">(뜻·학습 기록 유지)</small></div>
+          ${r.kind === "fill" && extraLine(r.preview) ? `<div class="meta">${extraLine(r.preview)}</div>` : ""}</div>`).join("")}
+      </div>
+      ${pv.rows.some((r) => r.kind === "same") ? `<p class="desc">이미 있고 바뀔 내용이 없는 단어 ${pv.rows.filter((r) => r.kind === "same").length}개: ${pv.rows.filter((r) => r.kind === "same").map((r) => esc(r.w.word)).join(", ")}</p>` : ""}
+      <div class="judge"><button class="btn primary" id="padd"></button></div>`;
+    const count = () => pv.rows.filter((r) => r.on && r.kind !== "same").length;
+    const label = () => { const n = count(); const b = qs("#padd"); b.textContent = n ? `선택한 ${n}개 반영` : "선택한 단어가 없어요"; b.disabled = !n; };
+    pv.rows.forEach((r) => { if (r.kind === "same") r.on = false; });
+    label();
+    qs("#plist").addEventListener("change", (e) => {
+      const i = e.target.dataset.i; if (i !== undefined) { pv.rows[+i].on = e.target.checked; label(); }
+    });
+    qs("#plist").addEventListener("input", (e) => {
+      const i = e.target.dataset.m; if (i !== undefined) pv.rows[+i].w.meaning = e.target.value;
+    });
+    qs("#pback").addEventListener("click", () => { P.preview = null; renderPaste(); });
+    qs("#padd").addEventListener("click", async () => {
+      const empty = pv.rows.filter((r) => r.on && r.kind === "new" && !r.w.meaning.trim());
+      if (empty.length) return alertBox("뜻이 비어 있어요", `${empty.map((r) => r.w.word).join(", ")}의 뜻을 입력하거나 체크를 해제해 주세요.`);
+      let added = 0, filled = 0;
+      const now = new Date();
+      for (const r of pv.rows) {
+        if (!r.on) continue;
+        if (r.kind === "new") {
+          if (S.words.some((x) => x.word === r.w.word)) continue;
+          r.w.meaning = r.w.meaning.trim();
+          r.w.created_at = C.nowStrSec(new Date(now.getTime() + added * 1000));
+          S.words.push(r.w); added++;
+        } else if (r.kind === "fill" && C.mergeExtras(r.w, r.extra)) filled++;
+      }
+      if (added || filled) await save();
+      S.paste = { text: "", preview: null }; S.testCount = null;
+      toast(`새 단어 ${added}개 추가${filled ? ` · ${filled}개 보충` : ""}`, 3000);
+      go("home");
+    });
   }
 
   function renderData() {
@@ -597,7 +723,8 @@
       <div class="section-label">불러오기</div>
       <div class="stack">
         <button class="btn" id="imj">JSON 불러오기 <span class="sub">단어장 교체</span></button>
-        <button class="btn" id="imc">CSV 가져오기 <span class="sub">새 단어만 추가</span></button>
+        <button class="btn" id="imc">CSV 가져오기 <span class="sub">여러 개 선택 가능</span></button>
+        <button class="btn" data-go="paste">📋 붙여넣기로 단어 추가</button>
       </div>
       <p class="desc">PC의 vocab_data.json을 폰으로 옮겨 불러오면 그대로 이어서 쓸 수 있어요. 두 단어장을 합치는 기능은 아직 없어서, 불러오면 이 기기 단어장이 교체됩니다.</p>
 
