@@ -320,6 +320,7 @@
             <div class="k">내 입력</div><div class="mine">${t.input ? esc(t.input) : "(미입력)"}</div>
             <div class="k">실제 뜻</div><div class="real">${esc(w.meaning)}</div>
             ${extrasHtml(w)}
+            ${exampleHtml(w)}
           </div>
         </div>
         <div class="judge">
@@ -341,6 +342,12 @@
       .map(([f, l]) => `<div class="ex"><span class="exk">${l}</span>${C.splitList(w[f]).map(esc).join(", ")}</div>`);
     if (w.note) rows.push(`<div class="ex"><span class="exk">메모</span>${esc(w.note)}</div>`);
     return rows.length ? `<div class="extras">${rows.join("")}</div>` : "";
+  }
+  /** 예문(해당 단어 굵게) + 해석. 예문이 없으면 아무것도 표시하지 않음 */
+  function exampleHtml(w) {
+    if (!w.example) return "";
+    const sent = C.exampleParts(w.example, w.word).map(([t, b]) => (b ? `<b>${esc(t)}</b>` : esc(t))).join("");
+    return `<div class="example"><div class="ex-en" lang="en">${sent}</div>${w.example_ko ? `<div class="ex-ko">${esc(w.example_ko)}</div>` : ""}</div>`;
   }
 
   document.addEventListener("keydown", (e) => {
@@ -476,9 +483,11 @@
         <label class="field"><span>단어</span><input id="ew" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next" value="${w ? esc(w.word) : ""}"></label>
         <label class="field"><span>뜻</span><input id="em" lang="ko" enterkeyhint="done" value="${w ? esc(w.meaning) : ""}"></label>
         <details class="more" ${w && C.EXTRA_FIELDS.some((f) => w[f]) ? "open" : ""}>
-          <summary>동의어 · 반의어 · 관련어 · 메모</summary>
+          <summary>동의어 · 반의어 · 관련어 · 메모 · 예문</summary>
           ${Object.entries(EXTRA_LABELS).map(([f, l]) => `<label class="field"><span>${l} <small>(쉼표로 구분)</small></span><input data-x="${f}" autocapitalize="off" autocorrect="off" spellcheck="false" value="${w ? esc(C.splitList(w[f]).join(", ")) : ""}"></label>`).join("")}
           <label class="field"><span>메모</span><input data-x="note" lang="ko" value="${w ? esc(w.note || "") : ""}"></label>
+          <label class="field"><span>예문 <small>(단어를 **로 감싸면 굵게)</small></span><textarea data-x="example" rows="2" autocapitalize="sentences" autocorrect="off" spellcheck="false">${w ? esc(w.example || "") : ""}</textarea></label>
+          <label class="field"><span>예문 해석</span><textarea data-x="example_ko" rows="2" lang="ko">${w ? esc(w.example_ko || "") : ""}</textarea></label>
         </details>
         ${detail}
         <div class="row2"><button type="button" class="btn" id="ecancel">닫기</button><button class="btn primary">${w ? "수정 저장" : "추가"}</button></div>
@@ -496,7 +505,7 @@
     guardSubmit(qs("#ef", ov), [$w, $m], async () => {
       const word = $w.value.trim().toLowerCase(), meaning = $m.value.trim();
       const extras = {};
-      ov.querySelectorAll("[data-x]").forEach((i) => { extras[i.dataset.x] = i.dataset.x === "note" ? i.value.trim() : C.normList(i.value); });
+      ov.querySelectorAll("[data-x]").forEach((i) => { extras[i.dataset.x] = ["note", "example", "example_ko"].includes(i.dataset.x) ? i.value.trim() : C.normList(i.value); });
       const clearInputs = () => { $w.value = ""; $m.value = ""; ov.querySelectorAll("[data-x]").forEach((i) => { i.value = ""; }); $w.focus(); };
       if (!word || !meaning) return toast("단어와 뜻을 모두 입력해 주세요");
       const dup = S.words.find((x) => x.word === word && x.id !== (w && w.id));
@@ -597,13 +606,13 @@
       if (text === null) { lines.push(`• ${f.name}: 인코딩을 읽을 수 없음`); continue; }
       const { added, dup, bad, fills } = C.parseCsvText(text, S.words);
       let filled = 0;
-      for (const [w, extra] of fills) if (C.mergeExtras(w, extra)) filled++;   // 학습 기록·뜻은 그대로, 동의어 등만 보충
+      for (const [w, extra] of fills) if (C.mergeExtras(w, extra)) filled++;   // 학습 기록·뜻은 그대로, 동의어·예문 등만 보충
       S.words = S.words.concat(added);
       totalAdded += added.length; totalFilled += filled;
       lines.push(`• ${f.name}: 추가 ${added.length}, 이미 있음 ${dup}${filled ? ` (보충 ${filled})` : ""}${bad ? `, 오류 ${bad}줄` : ""}`);
     }
     if (totalAdded || totalFilled) await save();
-    alertBox("가져오기 결과", `추가: ${totalAdded}개 · 동의어 등 보충: ${totalFilled}개\n\n${lines.join("\n")}`);
+    alertBox("가져오기 결과", `추가: ${totalAdded}개 · 동의어·예문 등 보충: ${totalFilled}개\n\n${lines.join("\n")}`);
     renderData();
   }
 
@@ -652,20 +661,21 @@
 
     const pv = P.preview;
     const nNew = pv.rows.filter((r) => r.kind === "new").length, nFill = pv.rows.filter((r) => r.kind === "fill").length;
+    const exLine = (w) => w.example ? `<div class="meta"><span class="tag">예</span>${C.exampleParts(w.example, w.word).map(([t, b]) => (b ? `<b>${esc(t)}</b>` : esc(t))).join("")}</div>` : "";
     const extraLine = (w) => [["synonyms", "동"], ["antonyms", "반"], ["related", "관"]].filter(([f]) => w[f])
       .map(([f, l]) => `<span class="tag">${l}</span>${C.splitList(w[f]).map(esc).join(", ")}`).join(" ");
     $app.innerHTML = `
       <div class="topbar"><button class="icon-btn" id="pback">← 다시 입력</button><h1>미리보기</h1></div>
-      <div class="notice" style="margin:0 0 10px">새 단어 ${nNew}개${nFill ? ` · 이미 있는 단어 ${nFill}개에 동의어 등 보충` : ""}${pv.bad ? ` · 형식 오류 ${pv.bad}줄 제외` : ""}${!nNew && !nFill ? " · 반영할 내용이 없어요" : ""}</div>
+      <div class="notice" style="margin:0 0 10px">새 단어 ${nNew}개${nFill ? ` · 이미 있는 단어 ${nFill}개에 동의어·예문 등 보충` : ""}${pv.bad ? ` · 형식 오류 ${pv.bad}줄 제외` : ""}${!nNew && !nFill ? " · 반영할 내용이 없어요" : ""}</div>
       <div class="list" id="plist">${pv.rows.map((r, i) => r.kind === "same" ? "" : r.kind === "new" ? `
         <div class="item prow"><label class="pcheck"><input type="checkbox" data-i="${i}" ${r.on ? "checked" : ""}>
           <span class="w">${esc(r.w.word)}</span><span class="badge new">새 단어</span></label>
           <input class="pmean" data-m="${i}" lang="ko" value="${esc(r.w.meaning)}" aria-label="${esc(r.w.word)} 뜻">
-          ${extraLine(r.w) ? `<div class="meta">${extraLine(r.w)}</div>` : ""}${r.w.note ? `<div class="meta">메모 · ${esc(r.w.note)}</div>` : ""}</div>` : `
+          ${extraLine(r.w) ? `<div class="meta">${extraLine(r.w)}</div>` : ""}${r.w.note ? `<div class="meta">메모 · ${esc(r.w.note)}</div>` : ""}${exLine(r.w)}</div>` : `
         <div class="item prow ${r.kind === "same" ? "dim" : ""}"><label class="pcheck"><input type="checkbox" data-i="${i}" ${r.on && r.kind === "fill" ? "checked" : ""} ${r.kind === "same" ? "disabled" : ""}>
           <span class="w">${esc(r.w.word)}</span><span class="badge">${r.kind === "fill" ? "이미 있음 · 보충" : "이미 있음 · 변경 없음"}</span></label>
           <div class="m">${esc(r.w.meaning)} <small style="color:var(--text-3)">(뜻·학습 기록 유지)</small></div>
-          ${r.kind === "fill" && extraLine(r.preview) ? `<div class="meta">${extraLine(r.preview)}</div>` : ""}</div>`).join("")}
+          ${r.kind === "fill" && extraLine(r.preview) ? `<div class="meta">${extraLine(r.preview)}</div>` : ""}${r.kind === "fill" && r.preview.example && !r.w.example ? exLine(r.preview) : ""}</div>`).join("")}
       </div>
       ${pv.rows.some((r) => r.kind === "same") ? `<p class="desc">이미 있고 바뀔 내용이 없는 단어 ${pv.rows.filter((r) => r.kind === "same").length}개: ${pv.rows.filter((r) => r.kind === "same").map((r) => esc(r.w.word)).join(", ")}</p>` : ""}
       <div class="judge"><button class="btn primary" id="padd"></button></div>`;

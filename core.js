@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  const APP_VERSION = "v4.8-android";
+  const APP_VERSION = "v4.9-android";
   const EF_DEFAULT = 2.5, EF_MIN = 1.3, EF_MAX = 3.0;
   const EF_GAIN = 0.1, EF_PENALTY = 0.2;
   const RELEARN_REQUIRED = 3;
@@ -11,12 +11,20 @@
   const FOCUS_MAX = 5.0;
   const CSV_FIELDS = ["Word", "Meaning", "Tests", "Correct", "Wrongs", "Interval", "EF",
     "Reps", "Relearn", "Focus", "NextReview", "LastTested", "CreatedAt",
-    "Synonyms", "Antonyms", "Related", "Note"];
+    "Synonyms", "Antonyms", "Related", "Note", "Example", "ExampleKo"];
   // 동의어·반의어·관련어는 ';'로 구분한 문자열, 메모는 자유 텍스트
   const LIST_FIELDS = ["synonyms", "antonyms", "related"];
-  const EXTRA_FIELDS = [...LIST_FIELDS, "note"];
+  // 예문·해석 (v4.9): 예문 속 해당 단어는 **단어**로 감싸 두면 채점 화면에서 굵게 표시
+  const EXAMPLE_FIELDS = ["example", "example_ko"];
+  const EXTRA_FIELDS = [...LIST_FIELDS, "note", ...EXAMPLE_FIELDS];
+  // CSV 열 이름의 다른 표기 (모두 소문자로 비교, PC COL_ALIASES와 동일)
+  const COL_ALIASES = {
+    example: ["example", "예문", "sentence"],
+    example_ko: ["exampleko", "example_ko", "example_kr", "examplekr", "example_translation",
+      "translation", "예문해석", "예문 해석", "해석"],
+  };
   // 앱이 아직 모르는 CSV 열은 버리지 않고 w.extra = {열 이름: 값}에 보관 (나중 기능에서 사용)
-  const KNOWN_COLS = new Set([...CSV_FIELDS.map((c) => c.toLowerCase()), "단어", "뜻"]);
+  const KNOWN_COLS = new Set([...CSV_FIELDS.map((c) => c.toLowerCase()), "단어", "뜻", ...Object.values(COL_ALIASES).flat()]);
 
   // ── 숫자: Python round()와 같은 결과를 내기 위한 함수 ──
   function pyRound(x) {               // 정수 반올림, .5는 짝수 쪽 (Python과 동일)
@@ -78,7 +86,8 @@
       ef: EF_DEFAULT, interval: 0, reps: 0, relearn: 0, focus: 0.0,
       next_review: null, last_tested: null,
       created_at: createdAt || nowStrSec(),
-      synonyms: "", antonyms: "", related: "", note: "", extra: {},
+      synonyms: "", antonyms: "", related: "", note: "",
+      example: "", example_ko: "", extra: {},
     };
   }
 
@@ -114,6 +123,14 @@
     for (const f of LIST_FIELDS) w[f] = normList(w[f]);
     w.note = String(w.note ?? "").trim();
     w.extra = normExtra(w.extra);
+    // v4.8에서 '모르는 칸'으로 보관해 둔 예문·해석을 정식 칸으로 옮김
+    for (const f of EXAMPLE_FIELDS) {
+      w[f] = String(w[f] ?? "").trim();
+      for (const k of Object.keys(w.extra).filter((k) => COL_ALIASES[f].includes(k.trim().toLowerCase()))) {
+        const v = w.extra[k]; delete w.extra[k];
+        if (!w[f]) w[f] = v;
+      }
+    }
     return w;
   }
 
@@ -138,6 +155,13 @@
     }
     const note = String(extra.note || "").trim();
     if (note && !(w.note || "").trim()) { w.note = note; changed = true; }
+    const exS = String(extra.example || "").trim(), koS = String(extra.example_ko || "").trim();
+    if (exS && !String(w.example || "").trim()) {          // 예문이 비어 있을 때만 예문·해석을 한 쌍으로 채움
+      w.example = exS; changed = true;
+      if (koS) w.example_ko = koS;
+    } else if (koS && exS === String(w.example || "").trim() && !String(w.example_ko || "").trim()) {
+      w.example_ko = koS; changed = true;                  // 같은 예문인데 해석만 비어 있으면 해석만 채움
+    }
     const ex = normExtra(extra.extra);
     for (const [k, v] of Object.entries(ex)) {
       if (!w.extra || typeof w.extra !== "object") w.extra = {};
@@ -146,6 +170,21 @@
     return changed;
   }
   function splitList(v) { return String(v || "").split(";").filter(Boolean); }
+
+  /** 'She **abandoned** it.' → [["She ", false], ["abandoned", true], [" it.", false]] (PC example_parts와 동일)
+   *  ** 표시가 없으면 단어와 같은 부분을 찾아 굵게 (대소문자 무시) */
+  function exampleParts(example, word = "") {
+    const text = String(example ?? "");
+    if (text.includes("**")) {
+      return text.split(/\*\*(.+?)\*\*/).map((t, i) => [t.replace(/\*\*/g, ""), i % 2 === 1]).filter(([t]) => t);
+    }
+    const wd = String(word ?? "").trim();
+    if (wd) {
+      const m = new RegExp("(?<![A-Za-z])" + wd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[A-Za-z]*", "i").exec(text);
+      if (m) return [[text.slice(0, m.index), false], [m[0], true], [text.slice(m.index + m[0].length), false]].filter(([t]) => t);
+    }
+    return text ? [[text, false]] : [];
+  }
 
   function normalizeAll(words, now = new Date()) {
     const seen = new Set();
@@ -272,12 +311,17 @@
     const seen = new Set(existingWords.map((w) => w.word));
     const existing = new Map(existingWords.map((w) => [w.word, w]));
     const added = [], fills = []; let dup = 0, bad = 0;
-    const col = (row, name) => { const i = headerMap ? headerMap[name.toLowerCase()] : undefined; return i !== undefined && i < row.length ? row[i].trim() : ""; };
+    const col = (row, name) => {
+      let i;
+      if (headerMap) for (const a of COL_ALIASES[name.toLowerCase()] || [name.toLowerCase()]) if (a in headerMap) { i = headerMap[a]; break; }
+      return i !== undefined && i < row.length ? row[i].trim() : "";
+    };
     const unknownCols = headerMap ? Object.entries(headerMap).filter(([h]) => h && !KNOWN_COLS.has(h)) : [];
     const extrasOf = (row) => {
       const extra = {};
       for (const [, i] of unknownCols) if (i < row.length && row[i].trim()) extra[headerRow[i]] = row[i].trim();
-      return { synonyms: col(row, "synonyms"), antonyms: col(row, "antonyms"), related: col(row, "related"), note: col(row, "note"), extra };
+      return { synonyms: col(row, "synonyms"), antonyms: col(row, "antonyms"), related: col(row, "related"), note: col(row, "note"),
+        example: col(row, "example"), example_ko: col(row, "example_ko"), extra };
     };
     for (const row of rows) {
       if (!row.length || row.every((c) => !c.trim())) continue;
@@ -321,7 +365,7 @@
       lines.push([d.word, d.meaning, d.test_cnt || 0, d.correct_cnt || 0, d.wrong_cnt || 0, d.interval || 0,
         pyNum(d.ef ?? EF_DEFAULT), d.reps || 0, d.relearn || 0, pyNum(d.focus || 0),
         d.next_review || "", d.last_tested || "", d.created_at || "",
-        d.synonyms || "", d.antonyms || "", d.related || "", d.note || "",
+        d.synonyms || "", d.antonyms || "", d.related || "", d.note || "", d.example || "", d.example_ko || "",
         ...extraKeys.map((k) => (d.extra || {})[k] || "")].map(csvEscape).join(","));
     }
     return "﻿" + lines.join("\r\n") + "\r\n";
@@ -333,7 +377,7 @@
     newWord, normalizeWord, normalizeAll, parseWordsJson,
     isDue, isReviewDue, applyAnswer, applyPractice, errorRate,
     pickReviewWords, pickHighErrorWords, statusText,
-    parseCsvRows, parseCsvText, wordsToCsv, normList, mergeExtras, splitList, EXTRA_FIELDS,
+    parseCsvRows, parseCsvText, wordsToCsv, normList, mergeExtras, splitList, exampleParts, EXTRA_FIELDS, EXAMPLE_FIELDS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.VocabCore = api;
