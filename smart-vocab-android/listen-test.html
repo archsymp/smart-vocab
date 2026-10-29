@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>듣기 모드 시험 · Smart Vocab</title>
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14161a" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icons/icon-192.png">
+<!-- 듣기 모드 시험 페이지 (v4.10)
+     - 단어장(IndexedDB)과 완전히 분리: 아래 ITEMS의 예시 단어만 사용하고, 단어장 데이터는 읽지도 쓰지도 않음
+     - 확인할 것: 화면이 꺼져도 계속 읽는지 / 이어폰 버튼(멈춤·다음)이 먹는지 / 잠금 화면에 표시되는지
+     - 기록은 이 페이지 전용 localStorage(lt_*)에만 저장 -->
+<style>
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #eef0f3; --border: #e1e4e8;
+  --text: #1c1f24; --text-2: #5b626c; --text-3: #8a919b;
+  --accent: #2563eb; --accent-ink: #ffffff; --accent-soft: #e6eefc;
+  --good: #15803d; --good-soft: #e3f4e8; --bad: #c2410c; --bad-soft: #fcebe2;
+  --due: #b45309; --due-soft: #fdf1df;
+  --radius: 14px; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --surface: #1d2025; --surface-2: #262a31; --border: #30353d;
+    --text: #e8eaed; --text-2: #a9b0ba; --text-3: #7b838e;
+    --accent: #5b8def; --accent-ink: #0d1320; --accent-soft: #1f2b44;
+    --good: #4ade80; --good-soft: #17301f; --bad: #fb923c; --bad-soft: #3a2316;
+    --due: #fbbf24; --due-soft: #3a2e12;
+    --shadow: none; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { overscroll-behavior-y: none; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; -webkit-text-size-adjust: 100%; }
+button, select { font: inherit; color: inherit; }
+main { max-width: 560px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 24px); }
+.topbar { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-bottom: 8px; }
+.topbar h1 { font-size: 18px; margin: 0; flex: 1; }
+.topbar a { color: var(--text-2); text-decoration: none; padding: 10px; margin-left: -10px; font-size: 15px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px; }
+.now { text-align: center; padding: 18px 14px; }
+.now .state { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); }
+.now .state.on { background: var(--good-soft); color: var(--good); }
+.now .state.pause { background: var(--due-soft); color: var(--due); }
+.now .w { font-size: 30px; font-weight: 800; color: var(--accent); margin-top: 8px; word-break: break-word; }
+.now .m { color: var(--text-2); min-height: 1.5em; }
+.now .part { font-size: 12px; color: var(--text-3); margin-top: 4px; min-height: 1.5em; }
+.nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.nums div { background: var(--surface-2); border-radius: 10px; padding: 8px; text-align: center; }
+.nums b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.nums small { font-size: 11px; color: var(--text-3); }
+.btns { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-top: 12px; }
+.btn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 52px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font-size: 16px; font-weight: 600; padding: 8px 14px; box-shadow: var(--shadow); }
+.btn:active { transform: scale(.985); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.btn.small { min-height: 40px; font-size: 14px; font-weight: 500; }
+.btn:disabled { opacity: .45; }
+.section-label { font-size: 13px; color: var(--text-3); font-weight: 600; margin: 22px 4px 8px; }
+.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--border); font-size: 15px; }
+.opt:last-child { border-bottom: 0; }
+.opt small { display: block; color: var(--text-3); font-size: 12px; }
+.opt select { height: 38px; max-width: 58%; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); padding: 0 8px; font-size: 14px; }
+.seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; flex: none; }
+.seg button { border: 0; background: transparent; border-radius: 8px; padding: 6px 12px; font-size: 14px; color: var(--text-2); }
+.seg button.on { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: var(--shadow); }
+.warn { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--bad-soft); color: var(--bad); font-size: 13px; }
+.log { font: 12px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; max-height: 46dvh; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
+.log .hl { color: var(--accent); font-weight: 700; }
+.log .bad { color: var(--bad); font-weight: 700; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; font-size: 14px; border-bottom: 1px solid var(--border); }
+.check:last-child { border-bottom: 0; }
+.check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: none; }
+.check small { display: block; color: var(--text-3); font-size: 12px; }
+ol.how { margin: 0; padding-left: 20px; font-size: 14px; color: var(--text-2); }
+ol.how li { margin-bottom: 8px; }
+ol.how b { color: var(--text); }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 60; max-width: calc(100% - 32px); }
+</style>
+</head>
+<body>
+<main>
+  <div class="topbar"><a href="./">← 앱으로</a><h1>🎧 듣기 모드 시험</h1></div>
+  <p style="margin:0 4px 12px;font-size:13px;color:var(--text-3)">예시 단어 12개를 반복해서 읽습니다. 단어장과는 별개라 학습 기록에 영향이 없어요.</p>
+
+  <div class="card now">
+    <span class="state" id="state">대기</span>
+    <div class="w" id="nw">—</div>
+    <div class="m" id="nm"></div>
+    <div class="part" id="np"></div>
+    <div class="nums">
+      <div><b id="nTime">0:00</b><small>재생 시간</small></div>
+      <div><b id="nCount">0</b><small>읽은 단어</small></div>
+      <div><b id="nHidden">0</b><small>화면 꺼진 동안</small></div>
+    </div>
+    <div class="btns">
+      <button class="btn primary" id="play">▶ 시작</button>
+      <button class="btn" id="next">⏭ 다음</button>
+    </div>
+  </div>
+
+  <div class="section-label">설정</div>
+  <div class="card" style="padding:4px 14px">
+    <div class="opt"><div>무음 오디오 반복<small>화면 꺼짐 유지 · 이어폰 버튼용</small></div>
+      <div class="seg" id="segSilent"><button data-v="1">켜기</button><button data-v="0">끄기</button></div></div>
+    <div class="opt"><div>예문</div>
+      <div class="seg" id="segEx"><button data-v="0">끄기</button><button data-v="1">예문+해석</button></div></div>
+    <div class="opt"><div>속도</div>
+      <div class="seg" id="segRate"><button data-v="0.8">0.8</button><button data-v="0.9">0.9</button><button data-v="1">1.0</button><button data-v="1.1">1.1</button></div></div>
+    <div class="opt"><div>영어 음성</div><select id="vEn"></select></div>
+    <div class="opt"><div>한국어 음성</div><select id="vKo"></select></div>
+  </div>
+  <div id="voiceWarn"></div>
+  <div class="row2"><button class="btn small" id="sayTest">🔊 음성 확인</button><button class="btn small" id="silentTest">🔇 무음만 켜 보기</button></div>
+
+  <div class="section-label">기록 <span style="font-weight:400" id="logInfo"></span></div>
+  <div class="card"><div class="log" id="log"></div></div>
+  <div class="row2"><button class="btn small" id="copyLog">기록 복사</button><button class="btn small" id="clearLog">기록 지우기</button></div>
+
+  <div class="section-label">시험 전 점검 (갤럭시)</div>
+  <div class="card" style="padding:4px 14px" id="checks">
+    <label class="check"><input type="checkbox" data-c="battery"><span><b>Chrome 배터리 '제한 없음'</b><small>설정 → 애플리케이션 → Chrome → 배터리 → 제한 없음</small></span></label>
+    <label class="check"><input type="checkbox" data-c="pwa"><span><b>설치한 Smart Vocab 앱도 같은 설정</b><small>앱 목록에 Smart Vocab이 따로 보이면 그것도 배터리 → 제한 없음</small></span></label>
+    <label class="check"><input type="checkbox" data-c="sleep"><span><b>절전 상태 앱 목록 확인</b><small>설정 → 디바이스 케어(배터리) → 백그라운드 사용 한도 → '절전 상태 앱'·'완전 절전 상태 앱'에 Chrome이 없어야 함</small></span></label>
+    <label class="check"><input type="checkbox" data-c="power"><span><b>첫 시험은 절전 모드 끄고</b><small>절전 모드에서는 따로 한 번 더 시험 (지하철에서 켜 둘 수 있으니)</small></span></label>
+    <label class="check"><input type="checkbox" data-c="tts"><span><b>음성 엔진·음성 데이터</b><small>설정 → 일반 → 텍스트 음성 변환 (Samsung TTS 또는 Google) → 영어·한국어 음성 설치</small></span></label>
+    <label class="check"><input type="checkbox" data-c="ear"><span><b>이어폰 연결 · 미디어 볼륨</b><small>음성은 미디어 볼륨으로 나와요</small></span></label>
+  </div>
+  <p style="margin:6px 4px 0;font-size:12px;color:var(--text-3)">메뉴 이름은 One UI 버전에 따라 조금 다를 수 있어요.</p>
+
+  <div class="section-label">시험 방법</div>
+  <div class="card">
+    <ol class="how">
+      <li><b>화면 켠 채 1분</b> — 시작을 누르고 단어→뜻이 이어서 나오는지, 알림창·잠금 화면에 재생 표시가 뜨는지 확인</li>
+      <li><b>무음 켜기 + 화면 끄기 5분</b> — 시작 후 전원 버튼으로 화면을 끄고 5분 이상 듣기. 다시 켜서 기록의 "화면 꺼짐 ○분 동안 ○개"를 확인 <small style="color:var(--text-3)">(Chrome의 강한 절전이 5분 뒤부터 걸려서 5분 이상이 중요)</small></li>
+      <li><b>화면 꺼진 채 이어폰 버튼</b> — 한 번 누르기 = 멈춤/재생, 두 번 누르기 = 다음 단어. 기록에 "이어폰·잠금 화면"으로 남는지 확인</li>
+      <li><b>무음 끄기 + 화면 끄기 5분</b> — 2번과 비교 (무음 오디오가 정말 필요한지)</li>
+      <li><b>길게 15~20분</b> — 지하철 탈 때처럼. 끝나면 "기록 복사" → Claude에게 붙여넣기</li>
+    </ol>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  // ── 예시 단어 (단어장과 무관) ──
+  const ITEMS = [
+    { w: "abandon", m: "버리다, 포기하다", ex: "They had to abandon the car in the snow.", ko: "그들은 눈 속에 차를 버려야 했다." },
+    { w: "reluctant", m: "꺼리는, 마지못한", ex: "She was reluctant to leave her friends.", ko: "그녀는 친구들을 떠나기를 꺼렸다." },
+    { w: "inevitable", m: "피할 수 없는, 필연적인", ex: "Change is inevitable in every company.", ko: "어느 회사에서나 변화는 피할 수 없다." },
+    { w: "commute", m: "통근하다; 통근", ex: "I commute to work by subway every day.", ko: "나는 매일 지하철로 출근한다." },
+    { w: "diligent", m: "부지런한, 성실한", ex: "He is a diligent student who never misses a class.", ko: "그는 수업을 한 번도 빠지지 않는 성실한 학생이다." },
+    { w: "postpone", m: "미루다, 연기하다", ex: "The meeting was postponed until next week.", ko: "회의는 다음 주로 연기되었다." },
+    { w: "fragile", m: "깨지기 쉬운, 연약한", ex: "Be careful, the glass is fragile.", ko: "조심해, 그 유리는 깨지기 쉬워." },
+    { w: "obtain", m: "얻다, 획득하다", ex: "You must obtain permission before entering.", ko: "들어가기 전에 허가를 받아야 한다." },
+    { w: "consistent", m: "일관된, 꾸준한", ex: "Consistent practice is the key to success.", ko: "꾸준한 연습이 성공의 열쇠다." },
+    { w: "vivid", m: "생생한, 선명한", ex: "I still have a vivid memory of that day.", ko: "나는 아직도 그날이 생생하게 기억난다." },
+    { w: "scarce", m: "부족한, 드문", ex: "Fresh water is scarce in the desert.", ko: "사막에서는 깨끗한 물이 부족하다." },
+    { w: "persuade", m: "설득하다", ex: "I persuaded him to join the team.", ko: "나는 그를 설득해서 팀에 합류시켰다." },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const ls = {
+    get(k, d) { try { const v = localStorage.getItem("lt_" + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem("lt_" + k, JSON.stringify(v)); } catch (e) {} },
+  };
+  const opt = Object.assign({ silent: 1, ex: 0, rate: 1, vEn: "", vKo: "" }, ls.get("opt", {}));
+  const saveOpt = () => ls.set("opt", opt);
+
+  // ── 기록 ──
+  let logLines = ls.get("log", []);
+  const pad = (n) => String(n).padStart(2, "0");
+  const clock = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const mmss = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+  const minsec = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`; };
+  function log(msg, cls = "") {
+    logLines.push([clock(), msg, cls]);
+    if (logLines.length > 600) logLines = logLines.slice(-600);
+    ls.set("log", logLines);
+    drawLog();
+  }
+  function drawLog() {
+    const el = $("log");
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    el.innerHTML = logLines.length ? logLines.map(([t, m, c]) => `<div${c ? ` class="${c}"` : ""}>${t}  ${esc(m)}</div>`).join("")
+                                   : `<div style="color:var(--text-3)">아직 기록이 없어요</div>`;
+    el.scrollTop = el.scrollHeight;
+    $("logInfo").textContent = logLines.length ? `· ${logLines.length}줄` : "";
+  }
+  function toast(msg) {
+    document.querySelectorAll(".toast").forEach((t) => t.remove());
+    const t = document.createElement("div"); t.className = "toast"; t.textContent = msg;
+    document.body.appendChild(t); setTimeout(() => t.remove(), 2200);
+  }
+
+  // ── 무음 오디오: 10초짜리 WAV를 만들어 반복 재생 (거의 0에 가까운 잡음 → 들리지 않음) ──
+  function silentWavUrl(sec = 10, rate = 8000) {
+    const n = sec * rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, (i % 2 ? 1 : -1), true);   // ±1 (16비트 기준 −90dB)
+    return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  }
+  const audio = new Audio(silentWavUrl());
+  audio.loop = true; audio.preload = "auto";
+  let audioExpectPause = false;
+  async function audioOn() {
+    try { await audio.play(); return true; }
+    catch (e) { log(`무음 오디오 재생 실패: ${e.name}`, "bad"); return false; }
+  }
+  function audioOff() { if (!audio.paused) { audioExpectPause = true; audio.pause(); } }
+  audio.addEventListener("pause", () => {
+    if (audioExpectPause) { audioExpectPause = false; return; }
+    if (playing) {   // 내가 멈춘 게 아닌데 멈춤 → 시스템(다른 앱·음성 엔진 등)이 멈춘 것
+      log(`무음 오디오가 시스템에 의해 멈춤 (화면 ${document.hidden ? "꺼짐" : "켜짐"}) → 다시 켜기 시도`, "bad");
+      audio.play().then(() => log("무음 오디오 다시 켜짐")).catch((e) => log(`다시 켜기 실패: ${e.name}`, "bad"));
+    }
+  });
+  audio.addEventListener("timeupdate", tick);   // 화면이 꺼져도 오디오 이벤트는 계속 옴 → 타이머 대신 시계로 사용
+
+  // ── 대기(타이머가 절전으로 늦어져도 오디오 시계로 깨움) ──
+  const waiters = new Set();
+  function wait(ms) {
+    return new Promise((res) => { const w = { due: Date.now() + ms, res }; w.t = setTimeout(() => fire(w), ms); waiters.add(w); });
+  }
+  function fire(w) { if (!waiters.has(w)) return; waiters.delete(w); clearTimeout(w.t); w.res(); }
+  function tick() {
+    const now = Date.now();
+    for (const w of [...waiters]) if (now >= w.due) fire(w);
+    if (speaking && now > speaking.deadline) {   // 음성이 끝났다는 신호가 안 옴 → 기록 후 넘어감
+      log(`음성 끝 신호 없음 (${Math.round((now - speaking.start) / 1000)}초) → 다음으로`, "bad");
+      speaking.finish(false);
+    }
+  }
+  setInterval(tick, 500);
+
+  // ── 음성 ──
+  const synth = window.speechSynthesis;
+  let voices = [];
+  const normLang = (l) => String(l || "").replace("_", "-").toLowerCase();
+  function loadVoices() {
+    if (!synth) return;
+    voices = synth.getVoices();
+    const fill = (sel, prefix, key) => {
+      const list = voices.filter((v) => normLang(v.lang).startsWith(prefix));
+      sel.innerHTML = list.length ? list.map((v) => `<option value="${v.voiceURI.replace(/"/g, "&quot;")}">${v.name.replace(/</g, "&lt;")} (${v.lang})${v.localService ? "" : " · 온라인"}</option>`).join("")
+                                  : `<option value="">기본 음성</option>`;
+      if (opt[key] && list.some((v) => v.voiceURI === opt[key])) sel.value = opt[key];
+    };
+    fill($("vEn"), "en", "vEn"); fill($("vKo"), "ko", "vKo");
+    const ko = voices.some((v) => normLang(v.lang).startsWith("ko")), en = voices.some((v) => normLang(v.lang).startsWith("en"));
+    $("voiceWarn").innerHTML = voices.length && (!ko || !en)
+      ? `<div class="warn">${!en ? "영어" : ""}${!en && !ko ? "·" : ""}${!ko ? "한국어" : ""} 음성을 찾지 못했어요. 설정 → 일반 → 텍스트 음성 변환에서 음성 데이터를 설치해 주세요. (기본 음성으로 시도합니다)</div>` : "";
+  }
+  if (synth) { loadVoices(); synth.addEventListener && synth.addEventListener("voiceschanged", loadVoices); }
+  const pickVoice = (lang) => {
+    const uri = lang === "en" ? $("vEn").value : $("vKo").value;
+    return voices.find((v) => v.voiceURI === uri) || voices.find((v) => normLang(v.lang).startsWith(lang)) || null;
+  };
+
+  let speaking = null;
+  function speak(text, lang) {
+    return new Promise((resolve) => {
+      if (!synth) return resolve(false);
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = lang === "en" ? "en-US" : "ko-KR";
+      const v = pickVoice(lang); if (v) u.voice = v;
+      u.rate = opt.rate;
+      const start = Date.now();
+      const sp = speaking = {
+        u, start, deadline: start + 8000 + [...text].length * 220 / opt.rate,
+        finish(ok) { if (speaking === sp) speaking = null; resolve(ok); },
+      };
+      u.onend = () => sp.finish(true);
+      u.onerror = (e) => { if (e.error !== "interrupted" && e.error !== "canceled") log(`음성 오류: ${e.error}`, "bad"); sp.finish(false); };
+      synth.speak(u);
+    });
+  }
+
+  // ── 재생 ──
+  let playing = false, runId = 0, pos = 0;
+  let sessionStart = 0, playedMs = 0, playStartedAt = 0, count = 0;
+  let hiddenAt = 0, hiddenCount0 = 0, hiddenTotal = 0, lastDoneAt = 0, hideLogCount = 0;
+  const playedNow = () => playedMs + (playing ? Date.now() - playStartedAt : 0);
+
+  function setMeta(it) {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: it.w, artist: it.m, album: "Smart Vocab 듣기 시험",
+        artwork: [{ src: "icons/icon-192.png", sizes: "192x192", type: "image/png" }, { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" }],
+      });
+    } catch (e) {}
+  }
+  function setState() {
+    const st = $("state");
+    st.textContent = playing ? "재생 중" : sessionStart ? "멈춤" : "대기";
+    st.className = "state " + (playing ? "on" : sessionStart ? "pause" : "");
+    $("play").textContent = playing ? "⏸ 멈춤" : sessionStart ? "▶ 이어서" : "▶ 시작";
+    if ("mediaSession" in navigator) try { navigator.mediaSession.playbackState = playing ? "playing" : sessionStart ? "paused" : "none"; } catch (e) {}
+  }
+  function drawNums() {
+    $("nTime").textContent = mmss(playedNow());
+    $("nCount").textContent = count;
+    $("nHidden").textContent = hiddenTotal + (hiddenAt && playing ? count - hiddenCount0 : 0);
+  }
+  setInterval(drawNums, 1000);
+
+  async function runLoop(id) {
+    while (id === runId && playing) {
+      const it = ITEMS[pos % ITEMS.length];
+      $("nw").textContent = it.w; $("nm").textContent = it.m; setMeta(it);
+      const parts = [[it.w, "en", "단어"], [it.m, "ko", "뜻"]];
+      if (opt.ex) parts.push([it.ex, "en", "예문"], [it.ko, "ko", "해석"]);
+      for (const [text, lang, label] of parts) {
+        if (id !== runId) return;
+        $("np").textContent = `${label} 읽는 중`;
+        await speak(text, lang);
+        if (id !== runId) return;
+        await wait(label === "단어" ? 700 : 500);
+      }
+      if (id !== runId) return;
+      count++; pos++; lastDoneAt = Date.now();
+      log(`#${count} ${it.w} 읽음${document.hidden ? " (화면 꺼짐)" : ""}`);
+      $("np").textContent = ""; drawNums();
+      await wait(900);
+    }
+  }
+
+  async function start(src) {
+    if (playing) return;
+    if (!synth) { toast("이 브라우저는 음성 읽기를 지원하지 않아요"); return; }
+    if (opt.silent) await audioOn();
+    playing = true; playStartedAt = Date.now();
+    if (!sessionStart) {
+      sessionStart = Date.now(); count = 0; hiddenTotal = 0;
+      log(`── 시작: 무음 오디오 ${opt.silent ? "켜짐" : "꺼짐"} · 예문 ${opt.ex ? "예문+해석" : "끄기"} · 속도 ${opt.rate} · Media Session ${"mediaSession" in navigator ? "지원" : "미지원"}`, "hl");
+    } else log(`▶ 재생 (${src})`);
+    if (hiddenAt) hiddenCount0 = count;
+    setState();
+    const id = ++runId;
+    synth.cancel();
+    runLoop(id);
+  }
+  function stopSpeech() {
+    runId++;
+    if (synth) synth.cancel();
+    if (speaking) speaking.finish(false);
+    for (const w of [...waiters]) fire(w);
+  }
+  function pause(src) {
+    if (!playing) return;
+    if (hiddenAt) { hiddenTotal += count - hiddenCount0; hiddenCount0 = count; }
+    playedMs += Date.now() - playStartedAt; playing = false;
+    stopSpeech(); audioOff(); setState(); drawNums(); $("np").textContent = "";
+    log(`⏸ 멈춤 (${src}) · 재생 ${minsec(playedMs)} · ${count}개`);
+  }
+  function skip(dir, src) {
+    pos = Math.max(0, pos + dir);
+    log(`${dir > 0 ? "⏭ 다음" : "⏮ 이전"} (${src})`);
+    if (playing) { stopSpeech(); const id = ++runId; runLoop(id); }
+    else { const it = ITEMS[pos % ITEMS.length]; $("nw").textContent = it.w; $("nm").textContent = it.m; setMeta(it); }
+  }
+
+  $("play").addEventListener("click", () => (playing ? pause("화면 버튼") : start("화면 버튼")));
+  $("next").addEventListener("click", () => skip(1, "화면 버튼"));
+
+  // ── 이어폰 버튼 · 잠금 화면 (Media Session) ──
+  if ("mediaSession" in navigator) {
+    const h = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) { log(`Media Session '${action}' 지원 안 됨`); } };
+    h("play", () => start("이어폰·잠금 화면"));
+    h("pause", () => pause("이어폰·잠금 화면"));
+    h("nexttrack", () => skip(1, "이어폰·잠금 화면"));
+    h("previoustrack", () => skip(-1, "이어폰·잠금 화면"));
+    h("stop", () => pause("잠금 화면 정지"));
+  }
+
+  // ── 화면 꺼짐/켜짐 기록 ──
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      hiddenAt = Date.now(); hiddenCount0 = count; hideLogCount = count;
+      log(`🌙 화면 꺼짐/숨김 (${playing ? "재생 중" : "멈춤 상태"}, 무음 오디오 ${audio.paused ? "꺼짐" : "켜짐"})`, "hl");
+    } else if (hiddenAt) {
+      const dur = Date.now() - hiddenAt, n = count - hideLogCount;
+      if (playing) hiddenTotal += count - hiddenCount0;
+      const ago = lastDoneAt ? ` · 마지막으로 읽은 때: ${minsec(Date.now() - lastDoneAt)} 전` : "";
+      log(`☀ 화면 켜짐 — 꺼진 ${minsec(dur)} 동안 ${n}개 읽음${ago}`, n ? "hl" : "bad");
+      hiddenAt = 0; drawNums();
+    }
+  });
+  document.addEventListener("freeze", () => log("❄ 페이지 정지(freeze) — 시스템이 백그라운드에서 멈춤", "bad"));
+  document.addEventListener("resume", () => log("페이지 정지 해제(resume)"));
+  window.addEventListener("pagehide", () => { if (playing) log("페이지 닫힘/숨김 (pagehide)"); });
+
+  // ── 설정 ──
+  function seg(id, key, conv = Number) {
+    const box = $(id);
+    const draw = () => box.querySelectorAll("button").forEach((b) => b.classList.toggle("on", conv(b.dataset.v) === opt[key]));
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      opt[key] = conv(b.dataset.v); saveOpt(); draw();
+      if (key === "silent" && sessionStart) {
+        log(`무음 오디오 ${opt.silent ? "켜기" : "끄기"}`);
+        if (opt.silent && playing) audioOn(); else if (!opt.silent) audioOff();
+      }
+    });
+    draw();
+  }
+  seg("segSilent", "silent"); seg("segEx", "ex"); seg("segRate", "rate");
+  $("vEn").addEventListener("change", (e) => { opt.vEn = e.target.value; saveOpt(); });
+  $("vKo").addEventListener("change", (e) => { opt.vKo = e.target.value; saveOpt(); });
+
+  $("sayTest").addEventListener("click", async () => {
+    if (playing) return toast("재생을 멈춘 뒤 눌러 주세요");
+    if (!synth) return toast("음성 읽기 미지원");
+    synth.cancel();
+    await speak("Hello. This is a voice test.", "en");
+    await speak("한국어 음성 확인입니다.", "ko");
+  });
+  $("silentTest").addEventListener("click", async () => {
+    if (playing) return toast("재생 중에는 이미 켜져 있어요");
+    if (audio.paused) { if (await audioOn()) { toast("무음 오디오 켜짐 — 알림창에 표시되는지 확인"); log("무음 오디오만 켜 봄"); $("silentTest").textContent = "🔇 무음 끄기"; } }
+    else { audioOff(); $("silentTest").textContent = "🔇 무음만 켜 보기"; }
+  });
+
+  $("copyLog").addEventListener("click", async () => {
+    const env = `[환경] ${navigator.userAgent}\n[화면] ${matchMedia("(display-mode: standalone)").matches ? "설치 앱(standalone)" : "브라우저 탭"} · 음성 ${voices.length}개`;
+    const text = env + "\n" + logLines.map(([t, m]) => `${t}  ${m}`).join("\n");
+    try { await navigator.clipboard.writeText(text); toast("기록을 복사했어요"); }
+    catch (e) { toast("복사할 수 없어요. 기록을 길게 눌러 선택해 주세요"); }
+  });
+  $("clearLog").addEventListener("click", () => {
+    if (playing) return toast("재생을 멈춘 뒤 지워 주세요");
+    logLines = []; ls.set("log", logLines); sessionStart = 0; playedMs = 0; count = 0; hiddenTotal = 0; pos = 0;
+    setState(); drawNums(); drawLog(); $("nw").textContent = "—"; $("nm").textContent = "";
+  });
+
+  // 점검 목록 체크 상태 유지
+  const checks = ls.get("checks", {});
+  document.querySelectorAll("#checks input").forEach((c) => {
+    c.checked = !!checks[c.dataset.c];
+    c.addEventListener("change", () => { checks[c.dataset.c] = c.checked; ls.set("checks", checks); });
+  });
+
+  if (logLines.length) logLines.push([clock(), "── 페이지 다시 열림 (위는 지난 기록)", "hl"]);
+  drawLog(); setState(); drawNums();
+  if (!synth) $("voiceWarn").innerHTML = `<div class="warn">이 브라우저는 음성 읽기(Web Speech API)를 지원하지 않아요.</div>`;
+})();
+</script>
+</body>
+</html>

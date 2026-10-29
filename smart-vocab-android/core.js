@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  const APP_VERSION = "v4.9-android";
+  const APP_VERSION = "v4.10-android";
   const EF_DEFAULT = 2.5, EF_MIN = 1.3, EF_MAX = 3.0;
   const EF_GAIN = 0.1, EF_PENALTY = 0.2;
   const RELEARN_REQUIRED = 3;

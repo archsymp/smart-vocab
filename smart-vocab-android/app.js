@@ -122,6 +122,11 @@
       const first = ov.querySelector(".btn.primary") || ov.querySelector(".btn"); first && first.focus();
     });
   }
+  // 창(.overlay)이 떠 있는 동안 뒤 화면 스크롤 고정 (v4.10)
+  new MutationObserver(() => {
+    document.documentElement.classList.toggle("modal-open", !!document.querySelector("body > .overlay"));
+  }).observe(document.body, { childList: true });
+
   const confirmBox = (title, msg, okLabel = "확인", cancelLabel = "취소", danger = false) =>
     dialog({ title, msg, buttons: [{ label: okLabel, value: true, kind: danger ? "danger" : "primary" }, { label: cancelLabel, value: false }] }).then((v) => v === true);
   const alertBox = (title, msg) => dialog({ title, msg, buttons: [{ label: "확인", value: true, kind: "primary" }] });
@@ -160,6 +165,72 @@
 
   function render() {
     ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData, paste: renderPaste })[S.screen]();
+    persistUI();
+  }
+
+  // ─────────────────────────────────────────
+  // 새로고침해도 보던 화면 유지 (v4.10)
+  //  - 화면·검색어·정렬·스크롤·진행 중인 테스트를 sessionStorage에 기록 (단어장 데이터와는 별개)
+  //  - 테스트는 단어 id만 기록 → 새로고침 후 단어장에서 같은 단어를 찾아 이어서 출제
+  // ─────────────────────────────────────────
+  const UI_KEY = "sv_ui";
+  function persistUI() {
+    try {
+      const ids = (a) => (a || []).map((w) => w.id), t = S.test, P = S.paste;
+      sessionStorage.setItem(UI_KEY, JSON.stringify({
+        v: 1, screen: S.screen, scroll: Math.round(window.scrollY || 0),
+        manage: { q: S.manage.q, sort: S.manage.sort, limit: S.manage.limit },
+        test: t ? { queue: ids(t.queue), idx: t.idx, wrong: ids(t.wrong), practice: !!t.practice, pq: ids(t.pq),
+                    attempts: t.attempts || 0, step: t.step, input: t.input || "", stopped: !!t.stopped } : null,
+        paste: { text: P.text, preview: P.preview ? P.preview.rows.map((r) => [r.on ? 1 : 0, r.kind === "new" ? r.w.meaning : null]) : null },
+      }));
+    } catch (e) { /* 저장 못 해도 앱 동작에는 영향 없음 */ }
+  }
+  let scrollTimer = null;
+  window.addEventListener("scroll", () => { clearTimeout(scrollTimer); scrollTimer = setTimeout(persistUI, 250); }, { passive: true });
+  window.addEventListener("pagehide", persistUI);
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
+  /** 저장해 둔 화면 상태 복원. 복원할 화면이 있으면 { screen, scroll } 반환 */
+  function restoreUI() {
+    let u = null;
+    try { u = JSON.parse(sessionStorage.getItem(UI_KEY) || "null"); } catch (e) { u = null; }
+    if (!u || u.v !== 1 || !u.screen || u.screen === "home") return null;
+    if (u.manage) {
+      S.manage.q = String(u.manage.q || "");
+      if (SORTS.includes(u.manage.sort)) S.manage.sort = u.manage.sort;
+      S.manage.limit = Math.max(100, parseInt(u.manage.limit, 10) || 100);
+    }
+    if (u.paste) S.paste.text = String(u.paste.text || "");
+    let screen = u.screen;
+    if (screen === "test" || screen === "result") {
+      const t = u.test, byId = new Map(S.words.map((w) => [w.id, w]));
+      const pick = (a) => (Array.isArray(a) ? a : []).map((id) => byId.get(id)).filter(Boolean);
+      if (!t) screen = "home";
+      else {
+        const qIds = Array.isArray(t.queue) ? t.queue : [];
+        const idx = Math.max(0, parseInt(t.idx, 10) || 0);
+        S.test = {
+          queue: pick(qIds), idx: qIds.slice(0, idx).filter((id) => byId.has(id)).length,  // 없어진 단어가 있어도 위치 보정
+          wrong: pick(t.wrong), practice: !!t.practice, pq: pick(t.pq), attempts: parseInt(t.attempts, 10) || 0,
+          step: t.step === "judge" ? "judge" : "ask", input: String(t.input || ""), stopped: !!t.stopped,
+        };
+        const T = S.test;
+        if (!T.queue.length || (T.practice && !T.pq.length)) { S.test = null; screen = "home"; }
+        else if (screen === "result" && T.practice) screen = "test";
+      }
+    } else if (screen === "paste" && u.paste && Array.isArray(u.paste.preview) && S.paste.text.trim()) {
+      const pv = buildPreview(S.paste.text);
+      if (pv.rows.length) {
+        if (pv.rows.length === u.paste.preview.length) pv.rows.forEach((r, i) => {   // 체크·고친 뜻 복원
+          const [on, m] = u.paste.preview[i] || [];
+          r.on = !!on; if (r.kind === "new" && typeof m === "string") r.w.meaning = m;
+        });
+        pv.restored = true; S.paste.preview = pv;
+      }
+    }
+    if (!["test", "result", "manage", "data", "paste"].includes(screen)) return null;
+    return { screen, scroll: +u.scroll || 0 };
   }
 
   // ─────────────────────────────────────────
@@ -307,6 +378,7 @@
           <button class="btn primary" style="margin-top:10px">정답 확인</button>
         </form>`;
       const $ans = qs("#ans");
+      $ans.addEventListener("input", () => { t.input = $ans.value; persistUI(); });
       guardSubmit(qs("#f"), [$ans], () => {
         if (S.screen !== "test" || t.step !== "ask") return;
         t.input = $ans.value.trim(); t.step = "judge"; $ans.blur(); render();
@@ -369,6 +441,7 @@
         t.idx++;
       }
       t.step = "ask"; t.input = "";
+      persistUI();                  // 진행 위치를 먼저 기록 → 새로고침해도 같은 문제를 두 번 채점하지 않음
       await save();                 // 한 문제마다 바로 저장 (앱이 꺼져도 기록 유지)
       render();
     } finally { judging = false; }
@@ -438,7 +511,16 @@
     return `<button class="item" data-id="${esc(w.id)}">
       <div class="top"><span class="w">${esc(w.word)}</span><span class="badge ${cls}">${esc(st)}</span>
         ${due ? `<span class="badge due">복습</span>` : ""}${w.focus > 0 ? `<span class="badge focus">집중 ${(+w.focus).toFixed(1)}</span>` : ""}</div>
-      <div class="m">${esc(w.meaning)}</div>${meta ? `<div class="meta">${meta}</div>` : ""}</button>`;
+      <div class="m">${S.meta.hideMeaning ? `<span class="m-mask" data-reveal="${esc(w.id)}">뜻 보기</span>` : esc(w.meaning)}</div>${meta ? `<div class="meta">${meta}</div>` : ""}</button>`;
+  }
+
+  /** 뜻 가리기(v4.10): 가린 뜻을 누르면 그 단어만 잠깐 보였다가 다시 가려짐 (다시 누르면 바로 가림) */
+  function toggleReveal(el) {
+    const hide = () => { clearTimeout(el._t); el.classList.remove("shown"); el.textContent = "뜻 보기"; };
+    if (el.classList.contains("shown")) return hide();
+    const w = S.words.find((x) => x.id === el.dataset.reveal); if (!w) return;
+    el.textContent = w.meaning; el.classList.add("shown");
+    clearTimeout(el._t); el._t = setTimeout(hide, Math.min(6000, 2500 + [...w.meaning].length * 60));
   }
 
   function renderManage() {
@@ -449,17 +531,22 @@
         <input id="q" type="search" placeholder="🔍 단어 또는 뜻 검색" value="${esc(S.manage.q)}" autocomplete="off">
         <select id="sort" aria-label="정렬">${SORTS.map((s) => `<option ${s === S.manage.sort ? "selected" : ""}>${s}</option>`).join("")}</select>
       </div>
+      <div class="hide-row"><label class="switch"><input type="checkbox" id="hidem" ${S.meta.hideMeaning ? "checked" : ""}>뜻 가리기</label></div>
       <div class="list" id="list"></div>`;
     const drawList = () => {
       const all = filteredWords(), shown = all.slice(0, S.manage.limit);
       qs("#list").innerHTML = (shown.length ? shown.map(itemHtml).join("") : `<div class="empty">${S.words.length ? "검색 결과가 없습니다" : "단어가 없습니다. ＋ 추가를 눌러 시작하세요"}</div>`)
         + (all.length > shown.length ? `<button class="btn small" id="more" style="margin-top:4px">더 보기 (${all.length - shown.length}개 남음)</button>` : "");
-      const m = qs("#more"); m && m.addEventListener("click", () => { S.manage.limit += 200; drawList(); });
+      const m = qs("#more"); m && m.addEventListener("click", () => { S.manage.limit += 200; drawList(); persistUI(); });
     };
     drawList();
-    qs("#q").addEventListener("input", (e) => { S.manage.q = e.target.value; S.manage.limit = 100; drawList(); });
-    qs("#sort").addEventListener("change", (e) => { S.manage.sort = e.target.value; drawList(); });
-    qs("#list").addEventListener("click", (e) => { const it = e.target.closest(".item[data-id]"); if (it) openEditor(it.dataset.id); });
+    qs("#q").addEventListener("input", (e) => { S.manage.q = e.target.value; S.manage.limit = 100; drawList(); persistUI(); });
+    qs("#sort").addEventListener("change", (e) => { S.manage.sort = e.target.value; drawList(); persistUI(); });
+    qs("#list").addEventListener("click", (e) => {
+      const rv = e.target.closest("[data-reveal]"); if (rv) return toggleReveal(rv);   // 가린 뜻 → 잠깐 보기
+      const it = e.target.closest(".item[data-id]"); if (it) openEditor(it.dataset.id);  // 나머지 → 수정 창
+    });
+    qs("#hidem").addEventListener("change", (e) => { S.meta.hideMeaning = e.target.checked; saveMeta(); drawList(); });
     qs("#add").addEventListener("click", () => openEditor(null));
     bindGo();
     S.manage.redraw = drawList;
@@ -478,7 +565,7 @@
         <div><b>${w.next_review ? esc(w.next_review.slice(0, 10)) : "-"}</b><small>다음 복습</small></div>
         <div><b style="font-size:13px">${w.last_tested ? esc(w.last_tested.slice(2)) : "-"}</b><small>최근 학습</small></div></div>` : "";
     ov.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
-      <h2>${w ? "단어 수정" : "단어 추가"}</h2>
+      <div class="sheet-head"><h2>${w ? "단어 수정" : "단어 추가"}</h2><button type="button" class="sheet-x" id="ex" aria-label="닫기">✕</button></div>
       <form id="ef" autocomplete="off">
         <label class="field"><span>단어</span><input id="ew" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next" value="${w ? esc(w.word) : ""}"></label>
         <label class="field"><span>뜻</span><input id="em" lang="ko" enterkeyhint="done" value="${w ? esc(w.meaning) : ""}"></label>
@@ -498,6 +585,7 @@
     sheetClose = close;
     ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
     qs("#ecancel", ov).addEventListener("click", close);
+    qs("#ex", ov).addEventListener("click", close);
     const $w = qs("#ew", ov), $m = qs("#em", ov);
     $w.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); $m.focus(); } });
     if (!w) setTimeout(() => $w.focus(), 50);
@@ -644,7 +732,7 @@
         </div>`;
       bindGo();
       const $t = qs("#ptext");
-      $t.addEventListener("input", () => { P.text = $t.value; });
+      $t.addEventListener("input", () => { P.text = $t.value; persistUI(); });
       qs("#pclip").addEventListener("click", async () => {
         try { const t = await navigator.clipboard.readText(); if (t) { $t.value = P.text = t; toast("붙여넣었습니다"); } else toast("클립보드가 비어 있어요"); }
         catch (e) { toast("클립보드를 읽을 수 없어요. 입력칸을 길게 눌러 붙여넣어 주세요"); $t.focus(); }
@@ -654,7 +742,7 @@
         if (!P.text.trim()) return toast("붙여넣은 내용이 없어요");
         const pv = buildPreview(P.text);
         if (!pv.rows.length) return alertBox("읽을 수 있는 단어가 없어요", `단어와 뜻이 쉼표로 구분된 텍스트인지 확인해 주세요.${pv.bad ? `\n(형식 오류 ${pv.bad}줄)` : ""}`);
-        P.preview = pv; renderPaste(); window.scrollTo(0, 0);
+        P.preview = pv; renderPaste(); window.scrollTo(0, 0); persistUI();
       });
       return;
     }
@@ -684,12 +772,12 @@
     pv.rows.forEach((r) => { if (r.kind === "same") r.on = false; });
     label();
     qs("#plist").addEventListener("change", (e) => {
-      const i = e.target.dataset.i; if (i !== undefined) { pv.rows[+i].on = e.target.checked; label(); }
+      const i = e.target.dataset.i; if (i !== undefined) { pv.rows[+i].on = e.target.checked; label(); persistUI(); }
     });
     qs("#plist").addEventListener("input", (e) => {
-      const i = e.target.dataset.m; if (i !== undefined) pv.rows[+i].w.meaning = e.target.value;
+      const i = e.target.dataset.m; if (i !== undefined) { pv.rows[+i].w.meaning = e.target.value; persistUI(); }
     });
-    qs("#pback").addEventListener("click", () => { P.preview = null; renderPaste(); });
+    qs("#pback").addEventListener("click", () => { P.preview = null; renderPaste(); persistUI(); });
     qs("#padd").addEventListener("click", async () => {
       const empty = pv.rows.filter((r) => r.on && r.kind === "new" && !r.w.meaning.trim());
       if (empty.length) return alertBox("뜻이 비어 있어요", `${empty.map((r) => r.w.word).join(", ")}의 뜻을 입력하거나 체크를 해제해 주세요.`);
@@ -739,7 +827,10 @@
       <p class="desc">PC의 vocab_data.json을 폰으로 옮겨 불러오면 그대로 이어서 쓸 수 있어요. 두 단어장을 합치는 기능은 아직 없어서, 불러오면 이 기기 단어장이 교체됩니다.</p>
 
       <div class="section-label">내보내기</div>
-      <button class="btn" id="exc">CSV 내보내기 <span class="sub">학습 기록 포함</span></button>`;
+      <button class="btn" id="exc">CSV 내보내기 <span class="sub">학습 기록 포함</span></button>
+
+      <div class="section-label">실험</div>
+      <a class="btn soft" href="listen-test.html" style="text-decoration:none">🎧 듣기 모드 시험 페이지 <span class="sub">단어장과 별개</span></a>`;
     bindGo();
     qs("#exj").addEventListener("click", () => exportJson("download"));
     const sh = qs("#shj"); sh && sh.addEventListener("click", () => exportJson("share"));
@@ -778,7 +869,13 @@
     if (navigator.storage && navigator.storage.persist) {
       try { S.persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch (e) { S.persisted = null; }
     }
+    const back = restoreUI();       // 새로고침 전 화면으로 (없으면 홈)
+    if (back) {
+      S.screen = back.screen;
+      if (!(history.state && history.state.sv)) history.pushState({ sv: 1 }, "");   // 뒤로가기 → 홈
+    }
     render();
+    if (back && back.scroll) requestAnimationFrame(() => window.scrollTo(0, back.scroll));
 
     // 날짜가 바뀐 채로 앱을 다시 열면 통계 갱신
     document.addEventListener("visibilitychange", () => { if (!document.hidden && S.screen === "home") render(); });
