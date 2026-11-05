@@ -164,7 +164,7 @@
   });
 
   function render() {
-    ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData, paste: renderPaste })[S.screen]();
+    ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData, paste: renderPaste, cloze: renderCloze })[S.screen]();
     persistUI();
   }
 
@@ -268,6 +268,7 @@
         <div class="stat new"><div class="n">${c.fresh}</div><div class="l">미학습</div></div>
       </div>
       <div class="mini-stats"><span>전체 ${c.total}개</span><span>오답 기록 ${c.wrong}개</span></div>
+      ${forecastHtml()}
 
       <div class="section-label">테스트</div>
       <div class="stepper">
@@ -281,7 +282,8 @@
       <div class="stack" style="margin-top:10px">
         <button class="btn primary" data-mode="normal">🔥 추천 복습 <span class="sub">망각 곡선</span></button>
         <button class="btn" data-mode="high_error">🎯 오답률 집중 테스트</button>
-        <button class="btn" data-mode="new_only">✨ 새 단어 학습 <span class="sub">${c.fresh}개</span></button>
+        <button class="btn" data-mode="new_only">✨ 새 단어 학습 <span class="sub">${c.fresh}개${newLimit() ? ` · 오늘 남은 ${newLeft()}개` : ""}</span></button>
+        <button class="btn" id="cloze">📝 빈칸 연습 <span class="sub">예문 ${clozeCandidates().length}개 · 기록 미반영</span></button>
       </div>
 
       <div class="section-label">관리</div>
@@ -297,11 +299,26 @@
     $app.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", () => {
       S.testCount = Math.max(1, (parseInt($count.value, 10) || 0) + +b.dataset.step); $count.value = S.testCount;
     }));
+    qs("#cloze").addEventListener("click", () => { S.testCount = Math.max(1, parseInt($count.value, 10) || 1); startCloze(); });
     $app.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       S.testCount = Math.max(1, parseInt($count.value, 10) || 1); startTest(b.dataset.mode);
     }));
     bindGo();
   }
+  /** 앞으로 7일 복습 예정 개수 (v4.11) */
+  function forecastHtml() {
+    if (!S.words.length) return "";
+    const t = today(), days = [];
+    const WD = ["일", "월", "화", "수", "목", "금", "토"];
+    for (let k = 1; k <= 7; k++) {
+      const d = C.addDays(t, k);
+      const n = S.words.filter((w) => C.parseDate(w.next_review) === d).length;
+      const label = k === 1 ? "내일" : k === 2 ? "모레" : WD[new Date(d + "T00:00:00").getDay()];
+      days.push(`<div class="fc${n ? "" : " zero"}"><b>${n}</b><small>${label}</small></div>`);
+    }
+    return `<div class="section-label">앞으로 7일 복습 예정</div><div class="forecast">${days.join("")}</div>`;
+  }
+
   function bindGo() {
     $app.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => go(b.dataset.go)));
   }
@@ -311,14 +328,27 @@
   // ─────────────────────────────────────────
   function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
+  // ── 하루 새 단어 출제 한도 (v4.11, 기본 꺼짐) — 단어 추가는 제한하지 않고, 테스트에 처음 나오는 새 단어 수만 조절
+  const newLimit = () => Math.max(0, parseInt(S.meta.newLimit, 10) || 0);
+  const newToday = () => (S.meta.newIntro && S.meta.newIntro.date === today() ? S.meta.newIntro.n : 0);
+  const newLeft = () => Math.max(0, newLimit() - newToday());
+
   async function startTest(mode) {
     if (!S.words.length) return alertBox("알림", "단어가 없습니다. 단어 관리에서 추가하거나 백업 화면에서 가져와 주세요.");
     const num = S.testCount;
     const fresh = S.words.filter((w) => (w.test_cnt || 0) === 0);
+    let freshCap = fresh.length;
+    if (newLimit()) {
+      freshCap = Math.min(fresh.length, newLeft());
+      if (mode === "new_only" && fresh.length && !freshCap) {
+        if (!(await confirmBox("오늘 새 단어 한도", `오늘 새 단어 ${newLimit()}개를 모두 풀었어요.\n(한도는 백업·가져오기 → 학습 설정에서 바꿀 수 있어요)\n\n그래도 새 단어를 풀까요?`, "그래도 풀기", "그만두기"))) return;
+        freshCap = fresh.length;
+      }
+    }
     let queue;
     if (mode === "new_only") {
       if (!fresh.length) return alertBox("알림", "새 단어가 없습니다.");
-      queue = shuffle(fresh).slice(0, num);
+      queue = shuffle(fresh).slice(0, Math.min(num, freshCap));
     } else if (mode === "high_error") {
       const c = C.pickHighErrorWords(S.words);
       if (!c.length) return alertBox("알림", "오답 기록이 있는 단어가 없습니다.");
@@ -326,8 +356,8 @@
     } else {
       queue = C.pickReviewWords(S.words, today()).slice(0, num);
       const short = num - queue.length;
-      if (short > 0 && fresh.length) {
-        const fill = Math.min(short, fresh.length);
+      if (short > 0 && freshCap) {
+        const fill = Math.min(short, freshCap);
         const msg = queue.length ? `오늘 복습할 단어가 ${queue.length}개뿐입니다.\n나머지 ${fill}개를 새 단어로 채울까요?`
                                  : `오늘 복습할 단어가 없습니다.\n새 단어 ${fill}개로 테스트할까요?`;
         if (await confirmBox("알림", msg, "채우기", queue.length ? "복습만 하기" : "취소")) queue = queue.concat(shuffle(fresh).slice(0, fill));
@@ -391,8 +421,10 @@
           <div class="compare">
             <div class="k">내 입력</div><div class="mine">${t.input ? esc(t.input) : "(미입력)"}</div>
             <div class="k">실제 뜻</div><div class="real">${esc(w.meaning)}</div>
+            <div class="says"><button type="button" class="say" data-say="wm">🔊 단어·뜻</button></div>
             ${extrasHtml(w)}
-            ${exampleHtml(w)}
+            ${linksHtml(w)}
+            ${exampleHtml(w, true)}
           </div>
         </div>
         <div class="judge">
@@ -404,6 +436,9 @@
         </div>`;
       qs("#ok").addEventListener("click", () => judge(true));
       qs("#no").addEventListener("click", () => judge(false));
+      $app.querySelectorAll("[data-say]").forEach((b) => b.addEventListener("click", () => {
+        Voice.say(b.dataset.say === "ex" ? exampleParts(w, false) : wordParts(w, false));
+      }));
     }
     qs("#stop").addEventListener("click", stopTest);
   }
@@ -415,12 +450,75 @@
     if (w.note) rows.push(`<div class="ex"><span class="exk">메모</span>${esc(w.note)}</div>`);
     return rows.length ? `<div class="extras">${rows.join("")}</div>` : "";
   }
+  /** 헷갈리는 단어 묶어 보기 (v4.11): 동의어·반의어·관련어로 연결된 단어 중 단어장에 있는 것 (양방향) */
+  function linkedWords(w) {
+    const map = new Map(S.words.map((x) => [x.word, x])), seen = new Set([w.word]), out = [];
+    const add = (word, rel) => { const x = map.get(String(word).toLowerCase()); if (x && !seen.has(x.word)) { seen.add(x.word); out.push([x, rel]); } };
+    for (const [f, l] of Object.entries(EXTRA_LABELS)) C.splitList(w[f]).forEach((t) => add(t, l));
+    for (const x of S.words) {
+      if (seen.has(x.word)) continue;
+      for (const [f, l] of Object.entries(EXTRA_LABELS)) if (C.splitList(x[f]).some((t) => t.toLowerCase() === w.word)) { add(x.word, l); break; }
+    }
+    return out;
+  }
+  function linksHtml(w, clickable) {
+    const list = linkedWords(w);
+    if (!list.length) return "";
+    return `<div class="links"><div class="k">단어장 속 연결 단어</div>${list.map(([x, rel]) =>
+      `<div class="lk"${clickable ? ` data-open="${esc(x.id)}" role="button"` : ""}><span class="tag">${rel.slice(0, 1)}</span><b>${esc(x.word)}</b> <span>${esc(x.meaning)}</span></div>`).join("")}</div>`;
+  }
+
   /** 예문(해당 단어 굵게) + 해석. 예문이 없으면 아무것도 표시하지 않음 */
-  function exampleHtml(w) {
+  function exampleHtml(w, withSay) {
     if (!w.example) return "";
     const sent = C.exampleParts(w.example, w.word).map(([t, b]) => (b ? `<b>${esc(t)}</b>` : esc(t))).join("");
-    return `<div class="example"><div class="ex-en" lang="en">${sent}</div>${w.example_ko ? `<div class="ex-ko">${esc(w.example_ko)}</div>` : ""}</div>`;
+    return `<div class="example"><div class="ex-en" lang="en">${sent}</div>${w.example_ko ? `<div class="ex-ko">${esc(w.example_ko)}</div>` : ""}${withSay ? `<div class="says"><button type="button" class="say" data-say="ex">🔊 예문·해석</button></div>` : ""}</div>`;
   }
+
+  // ─────────────────────────────────────────
+  // 음성 (v4.11)
+  //  - Smart Vocab 앱(APK): window.SVNative → 폰 음성 엔진을 앱이 직접 사용 (화면 꺼져도 동작)
+  //  - 웹앱(Chrome): Web Speech API (화면이 켜져 있을 때만)
+  // ─────────────────────────────────────────
+  const plain = (t) => String(t || "").replace(/\*\*/g, "").trim();
+  /** 읽을 조각: {t: 글, l: en|ko, g: 뒤에 쉬는 ms} */
+  function wordParts(w, more) {
+    return [{ t: w.word, l: "en", g: 700 }, { t: plain(w.meaning), l: "ko", g: more ? 600 : 1000 }];
+  }
+  function exampleParts(w, more) {
+    if (!w.example) return [];
+    const out = [{ t: plain(w.example), l: "en", g: w.example_ko ? 600 : 1000 }];
+    if (w.example_ko) out.push({ t: plain(w.example_ko), l: "ko", g: 1000 });
+    if (!more) out[out.length - 1].g = 300;
+    return out;
+  }
+  const Voice = {
+    native: () => !!(window.SVNative && window.SVNative.start),
+    state() { try { return JSON.parse(window.SVNative.state()); } catch (e) { return {}; } },
+    /** 채점 화면 🔊: 한 번만 읽기 */
+    say(parts) {
+      if (!parts.length) return;
+      const rate = (S.meta.listen && S.meta.listen.rate) || 1;
+      if (Voice.native()) {
+        const st = Voice.state();
+        if (st.running && !st.oneShot && st.started) { toast("듣기 모드 재생 중에는 쓸 수 없어요"); return; }
+        window.SVNative.start(JSON.stringify({ oneShot: true, loop: false, silent: false, rate,
+          items: [{ title: parts[0].t, sub: parts[1] ? parts[1].t : "", parts }] }));
+        return;
+      }
+      if (!("speechSynthesis" in window)) { toast("이 기기에서는 음성 읽기를 쓸 수 없어요"); return; }
+      speechSynthesis.cancel();
+      for (const p of parts) {
+        const u = new SpeechSynthesisUtterance(p.t);
+        u.lang = p.l === "ko" ? "ko-KR" : "en-US"; u.rate = rate;
+        speechSynthesis.speak(u);
+      }
+    },
+    hush() {
+      if (Voice.native()) { const st = Voice.state(); if (st.running && st.oneShot) window.SVNative.control("stop"); }
+      else if ("speechSynthesis" in window) speechSynthesis.cancel();
+    },
+  };
 
   document.addEventListener("keydown", (e) => {
     if (S.screen !== "test" || !S.test || S.test.step !== "judge" || dialogClose) return;
@@ -430,13 +528,19 @@
   let judging = false;
   async function judge(correct) {
     if (judging) return; judging = true;
+    Voice.hush();                   // 읽던 소리는 끊고 다음 문제로
     try {
       const t = S.test, w = currentWord();
       if (t.practice) {
         t.attempts++; C.applyPractice(w, correct);
         t.pq.shift(); if (!correct) t.pq.push(w);
       } else {
+        const wasNew = (w.test_cnt || 0) === 0;
         C.applyAnswer(w, correct, today());
+        if (wasNew) {                 // 오늘 처음 푼 새 단어 수 (한도 표시용, 학습 계산과 무관)
+          const t0 = today(), ni = S.meta.newIntro && S.meta.newIntro.date === t0 ? S.meta.newIntro : { date: t0, n: 0 };
+          ni.n++; S.meta.newIntro = ni; saveMeta();
+        }
         if (!correct) t.wrong.push(w);
         t.idx++;
       }
@@ -531,7 +635,7 @@
         <input id="q" type="search" placeholder="🔍 단어 또는 뜻 검색" value="${esc(S.manage.q)}" autocomplete="off">
         <select id="sort" aria-label="정렬">${SORTS.map((s) => `<option ${s === S.manage.sort ? "selected" : ""}>${s}</option>`).join("")}</select>
       </div>
-      <div class="hide-row"><label class="switch"><input type="checkbox" id="hidem" ${S.meta.hideMeaning ? "checked" : ""}>뜻 가리기</label></div>
+      <div class="hide-row"><button type="button" class="chip" id="listen">🎧 듣기 모드</button><label class="switch"><input type="checkbox" id="hidem" ${S.meta.hideMeaning ? "checked" : ""}>뜻 가리기</label></div>
       <div class="list" id="list"></div>`;
     const drawList = () => {
       const all = filteredWords(), shown = all.slice(0, S.manage.limit);
@@ -547,6 +651,8 @@
       const it = e.target.closest(".item[data-id]"); if (it) openEditor(it.dataset.id);  // 나머지 → 수정 창
     });
     qs("#hidem").addEventListener("change", (e) => { S.meta.hideMeaning = e.target.checked; saveMeta(); drawList(); });
+    qs("#listen").addEventListener("click", openListen);
+    listenChip();
     qs("#add").addEventListener("click", () => openEditor(null));
     bindGo();
     S.manage.redraw = drawList;
@@ -576,6 +682,7 @@
           <label class="field"><span>예문 <small>(단어를 **로 감싸면 굵게)</small></span><textarea data-x="example" rows="2" autocapitalize="sentences" autocorrect="off" spellcheck="false">${w ? esc(w.example || "") : ""}</textarea></label>
           <label class="field"><span>예문 해석</span><textarea data-x="example_ko" rows="2" lang="ko">${w ? esc(w.example_ko || "") : ""}</textarea></label>
         </details>
+        ${w ? linksHtml(w, true) : ""}
         ${detail}
         <div class="row2"><button type="button" class="btn" id="ecancel">닫기</button><button class="btn primary">${w ? "수정 저장" : "추가"}</button></div>
         ${w ? `<div class="row2" style="margin-top:10px"><button type="button" class="btn small danger" id="ereset">기록 초기화</button><button type="button" class="btn small danger" id="edel">삭제</button></div>` : ""}
@@ -586,6 +693,7 @@
     ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
     qs("#ecancel", ov).addEventListener("click", close);
     qs("#ex", ov).addEventListener("click", close);
+    ov.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => { const id = el.dataset.open; close(); openEditor(id); }));
     const $w = qs("#ew", ov), $m = qs("#em", ov);
     $w.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); $m.focus(); } });
     if (!w) setTimeout(() => $w.focus(), 50);
@@ -628,11 +736,266 @@
   }
 
   // ─────────────────────────────────────────
+  // ④ 빈칸 연습 (v4.11) — 예문 속 단어 자리를 비우고 4지선다. 학습 기록에는 반영하지 않음
+  //  선택지는 모두 기본형(단어장에 적힌 형태)으로 보여 줌 (예문 속 변형 형태로 정답이 드러나지 않게)
+  // ─────────────────────────────────────────
+  const hasBlank = (w) => !!w.example && C.exampleParts(w.example, w.word).some(([, b]) => b);
+  function clozeCandidates() { return S.words.filter(hasBlank); }
+
+  function startCloze() {
+    const cands = clozeCandidates();
+    if (!cands.length) return alertBox("빈칸 연습", "예문이 있는 단어가 없어요. 예문이 있는 단어로 연습할 수 있어요.");
+    if (S.words.length < 4) return alertBox("빈칸 연습", "선택지를 만들려면 단어가 4개 이상 필요해요.");
+    const n = Math.min(S.testCount || 10, cands.length);
+    const items = shuffle(cands.slice()).slice(0, n).map((w) => {
+      const opts = [w], used = new Set([w.word]);
+      const sentence = String(w.example).toLowerCase();
+      const ok = (x) => x && !used.has(x.word) && !sentence.includes(x.word);
+      for (const [x] of linkedWords(w)) { if (opts.length >= 3) break; if (ok(x)) { opts.push(x); used.add(x.word); } }   // 헷갈리는 단어 먼저 (최대 2개)
+      const pool = shuffle(S.words.filter(ok));
+      while (opts.length < 4 && pool.length) { const x = pool.pop(); if (!used.has(x.word)) { opts.push(x); used.add(x.word); } }
+      return { w, opts: shuffle(opts), pick: null };
+    });
+    S.testCount = null;
+    S.cloze = { items, idx: 0, ok: 0, wrong: [], done: false };
+    go("cloze");
+  }
+
+  function renderCloze() {
+    const Z = S.cloze;
+    if (!Z) { S.screen = "home"; return render(); }
+    if (Z.done) {
+      const n = Z.items.length;
+      $app.innerHTML = `
+        <div class="topbar"><h1>빈칸 연습 결과</h1></div>
+        <div class="score"><div class="big">${Z.ok}<span> / ${n}</span></div><div class="cap">정답률 ${n ? Math.round((Z.ok / n) * 100) : 0}% · 학습 기록 미반영</div></div>
+        ${Z.wrong.length ? `<div class="section-label">틀린 단어 ${Z.wrong.length}개</div>
+          <div class="list wrong-list">${Z.wrong.map((w) => `<div class="item"><div class="w">${esc(w.word)}</div><div class="m">${esc(w.meaning)}</div></div>`).join("")}</div>` : `<div class="empty">모두 맞혔어요 🎉</div>`}
+        <div class="stack" style="margin-top:16px">
+          <button class="btn primary" id="zagain">📝 다시 연습</button>
+          <button class="btn" id="zhome">홈으로</button>
+        </div>`;
+      qs("#zagain").addEventListener("click", () => { S.testCount = n; startCloze(); });
+      qs("#zhome").addEventListener("click", () => { S.cloze = null; go("home"); });
+      return;
+    }
+    const it = Z.items[Z.idx], w = it.w, answered = it.pick !== null;
+    const parts = C.exampleParts(w.example, w.word);
+    const sent = parts.map(([t, b]) => (b ? (answered ? `<b>${esc(t)}</b>` : `<span class="blank">${"_".repeat(Math.max(4, Math.min(10, [...t].length)))}</span>`) : esc(t))).join("");
+    const pct = Math.round((Z.idx / Z.items.length) * 100);
+    $app.innerHTML = `
+      <div class="topbar"><button class="icon-btn" id="zstop">✕ 그만</button>
+        <div class="progress"><i style="width:${pct}%"></i></div>
+        <span class="counter">${Z.idx + 1} / ${Z.items.length}</span></div>
+      <div class="card cloze-card">
+        <div class="k" style="font-size:12px;color:var(--text-3)">빈칸에 알맞은 단어</div>
+        <div class="cloze-sent" lang="en">${sent}</div>
+        ${answered && w.example_ko ? `<div class="ex-ko" style="margin-top:8px">${esc(w.example_ko)}</div>` : ""}
+      </div>
+      <div class="zopts">${it.opts.map((o, i) => {
+        const cls = !answered ? "" : o === w ? " right" : o === it.pick ? " wrongpick" : " dim";
+        return `<button class="btn zopt${cls}" data-z="${i}" ${answered ? "disabled" : ""}><span class="zn">${i + 1}</span><span class="zw">${esc(o.word)}</span>${answered ? `<span class="zm">${esc(o.meaning)}</span>` : ""}</button>`;
+      }).join("")}</div>
+      ${answered ? `<div class="judge"><button class="btn primary" id="znext">${Z.idx + 1 < Z.items.length ? "다음 (Enter)" : "결과 보기"}</button></div>` : `<div class="kbd-hint">키보드 1~4로 고르기</div>`}`;
+    qs("#zstop").addEventListener("click", async () => {
+      if (await confirmBox("빈칸 연습", "여기서 그만할까요? (학습 기록에는 원래 반영되지 않아요)", "그만하기", "계속하기")) { Z.done = true; Z.items = Z.items.slice(0, Z.idx + (answered ? 1 : 0)); render(); }
+    });
+    $app.querySelectorAll("[data-z]").forEach((b) => b.addEventListener("click", () => clozePick(+b.dataset.z)));
+    const nx = qs("#znext"); nx && nx.addEventListener("click", clozeNext);
+  }
+  function clozePick(i) {
+    const Z = S.cloze; if (!Z || Z.done) return;
+    const it = Z.items[Z.idx]; if (it.pick !== null || !it.opts[i]) return;
+    it.pick = it.opts[i];
+    if (it.pick === it.w) Z.ok++; else Z.wrong.push(it.w);
+    const st = S.meta.cloze || { n: 0, ok: 0 }; st.n++; if (it.pick === it.w) st.ok++; S.meta.cloze = st; saveMeta();
+    render();
+  }
+  function clozeNext() {
+    const Z = S.cloze; if (!Z) return;
+    if (Z.idx + 1 >= Z.items.length) Z.done = true; else Z.idx++;
+    render(); window.scrollTo(0, 0);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (S.screen !== "cloze" || !S.cloze || S.cloze.done || dialogClose) return;
+    const it = S.cloze.items[S.cloze.idx];
+    if (it.pick === null && /^[1-4]$/.test(e.key)) clozePick(+e.key - 1);
+    else if (it.pick !== null && e.key === "Enter") { e.preventDefault(); clozeNext(); }
+  });
+
+  // ─────────────────────────────────────────
+  // 듣기 모드 (v4.11) — 단어 관리 목록(검색·정렬 그대로)에서 골라 앱이 폰 음성으로 차례로 읽음
+  //  학습 기록은 건드리지 않음 (읽기만)
+  // ─────────────────────────────────────────
+  const LISTEN_SETS = [["list", "지금 목록 전체"], ["due", "오늘 복습"], ["relearn", "재학습 중"], ["wrong", "오답 기록 있음"], ["new", "미학습"]];
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const mmss = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${pad2(s % 60)}`; };
+  const fmtDur = (ms) => {
+    if (ms < 60000) return `약 ${Math.max(1, Math.ceil(ms / 1000))}초`;
+    const m = Math.ceil(ms / 60000);
+    return m < 60 ? `약 ${m}분` : `약 ${Math.floor(m / 60)}시간 ${m % 60}분`;
+  };
+  function listenOpt() { return Object.assign({ set: "list", order: "list", count: 50, ex: 0, rate: 1, loop: 0 }, S.meta.listen || {}); }
+  function listenPool(o) {
+    const t = today();
+    const f = { due: (w) => C.isReviewDue(w, t), relearn: (w) => (w.relearn || 0) > 0, wrong: (w) => (w.wrong_cnt || 0) > 0, new: (w) => (w.test_cnt || 0) === 0 }[o.set];
+    const list = filteredWords();
+    return f ? list.filter(f) : list;
+  }
+  function listenPick(o, shuffleIt) {
+    let pool = listenPool(o);
+    if (shuffleIt && o.order === "random") pool = shuffle(pool.slice());
+    const n = o.count > 0 ? Math.min(o.count, pool.length) : pool.length;
+    return pool.slice(0, n);
+  }
+  function itemParts(w, ex) { return ex && w.example ? wordParts(w, true).concat(exampleParts(w, true)) : wordParts(w, false); }
+
+  /** 예상 시간: 앱이 기록한 실제 읽기 시간(글자 수 ↔ ms)으로 계산, 기록이 적으면 넉넉한 기본값. 10% 여유 */
+  function listenCal(st) {
+    const out = { en: [700, 90], ko: [700, 140] };
+    const cal = (st && st.cal) || {};
+    for (const l of ["en", "ko"]) {
+      const c = cal[l];
+      if (!c || c[0] < 20) continue;
+      const [n, sx, sy, sxx, sxy] = c, d = n * sxx - sx * sx;
+      if (d <= 0) continue;
+      const b = (n * sxy - sx * sy) / d, a = (sy - b * sx) / n;
+      if (b > 10 && a > 0) out[l] = [a, b];
+    }
+    return out;
+  }
+  function listenEstimate(words, o, cal) {
+    let ms = 0;
+    for (const w of words) for (const p of itemParts(w, o.ex)) {
+      const [a, b] = cal[p.l] || cal.en;
+      ms += (a + b * [...p.t].length) / (o.rate || 1) + p.g;
+    }
+    return ms * 1.1;
+  }
+
+  function listenChip() {
+    const c = qs("#listen"); if (!c) return;
+    let label = "🎧 듣기 모드";
+    if (Voice.native()) {
+      const st = Voice.state();
+      if (st.running && !st.oneShot && st.total) label = `🎧 ${st.playing ? "재생 중" : st.finished ? "다 들음" : "멈춤"} ${st.finished ? st.total : (st.idx || 0) + 1}/${st.total}`;
+    }
+    c.textContent = label;
+  }
+  setInterval(listenChip, 2000);
+
+  let listenTimer = null;
+  function openListen() {
+    const ov = document.createElement("div"); ov.className = "overlay";
+    ov.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-head"><h2>🎧 듣기 모드</h2><button type="button" class="sheet-x" id="lx" aria-label="닫기">✕</button></div>
+      <div id="lbody"></div></div>`;
+    document.body.appendChild(ov);
+    const close = () => { clearInterval(listenTimer); listenTimer = null; ov.remove(); sheetClose = null; listenChip(); };
+    sheetClose = close;
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    qs("#lx", ov).addEventListener("click", close);
+    const body = qs("#lbody", ov);
+    const playing = (st) => st.running && !st.oneShot;
+    const draw = () => { const st = Voice.native() ? Voice.state() : {}; if (playing(st)) drawPlayer(body, st, draw); else drawSetup(body, draw); };
+    draw();
+    clearInterval(listenTimer);
+    listenTimer = setInterval(() => {
+      if (!Voice.native()) return;
+      const st = Voice.state(), pl = qs(".lplayer", body);
+      if (playing(st)) { if (pl) updatePlayer(body, st); else draw(); }
+      else if (pl) draw();
+    }, 1000);
+  }
+
+  function drawSetup(body, redraw) {
+    const o = listenOpt(), native = Voice.native();
+    const counts = {}; for (const [k] of LISTEN_SETS) counts[k] = listenPool(Object.assign({}, o, { set: k })).length;
+    body.innerHTML = `
+      ${native ? "" : `<div class="notice warn" style="margin:0 0 12px">듣기 모드는 <b>Smart Vocab 앱</b>에서 쓸 수 있어요. 화면이 꺼져도 계속 읽어 줘요.</div>`}
+      <label class="field"><span>들을 단어 <small>(단어 관리의 검색·정렬 그대로)</small></span>
+        <select id="lset" class="lsel">${LISTEN_SETS.map(([k, l]) => `<option value="${k}" ${k === o.set ? "selected" : ""}>${l} (${counts[k]}개)</option>`).join("")}</select></label>
+      <div class="lrow"><span>순서</span><div class="seg" id="lorder"><button type="button" data-v="list">목록 순서</button><button type="button" data-v="random">무작위</button></div></div>
+      <div class="lrow"><span>개수</span><div class="lcount"><input id="lcnt" type="number" inputmode="numeric" min="1" aria-label="재생할 단어 수"><button type="button" class="chip" id="lall">전체</button></div></div>
+      <div class="lrow"><span>예문</span><div class="seg" id="lex"><button type="button" data-v="0">끄기</button><button type="button" data-v="1">예문+해석</button></div></div>
+      <div class="lrow"><span>속도</span><div class="seg" id="lrate"><button type="button" data-v="0.8">0.8</button><button type="button" data-v="0.9">0.9</button><button type="button" data-v="1">1.0</button><button type="button" data-v="1.1">1.1</button></div></div>
+      <label class="lrow"><span>끝나면 처음부터 다시</span><input type="checkbox" id="lloop" class="lchk" ${o.loop ? "checked" : ""}></label>
+      <div class="lest" id="lest"></div>
+      <button class="btn primary" id="lgo" ${native ? "" : "disabled"}>▶ 듣기 시작</button>
+      <p class="desc">화면을 꺼도 계속 읽어요 · 이어폰 한 번 = 멈춤/재생, 두 번 = 다음 · 학습 기록에는 반영되지 않아요.</p>`;
+    const cal = listenCal(native ? Voice.state() : {});
+    const $cnt = qs("#lcnt", body);
+    const segs = { lorder: ["order", String], lex: ["ex", Number], lrate: ["rate", Number] };
+    const save = () => { S.meta.listen = o; saveMeta(); };
+    const update = () => {
+      const pool = listenPool(o).length;
+      $cnt.value = o.count > 0 ? Math.min(o.count, pool) : pool;
+      $cnt.max = Math.max(1, pool);
+      for (const [id, [key, conv]] of Object.entries(segs)) qs("#" + id, body).querySelectorAll("button").forEach((b) => b.classList.toggle("on", conv(b.dataset.v) === o[key]));
+      const words = listenPick(o, false), noEx = o.ex ? words.filter((w) => !w.example).length : 0;
+      qs("#lest", body).innerHTML = words.length
+        ? `<b>${fmtDur(listenEstimate(words, o, cal))}</b><span>${words.length}개${noEx ? ` · 예문 없는 ${noEx}개는 단어·뜻만` : ""}</span>`
+        : `<span>들을 단어가 없어요</span>`;
+      qs("#lgo", body).disabled = !native || !words.length;
+    };
+    qs("#lset", body).addEventListener("change", (e) => { o.set = e.target.value; save(); update(); });
+    for (const [id, [key, conv]] of Object.entries(segs)) qs("#" + id, body).addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return; o[key] = conv(b.dataset.v); save(); update();
+    });
+    $cnt.addEventListener("input", () => { const n = parseInt($cnt.value, 10); if (n > 0) { o.count = n; save(); update(); } });
+    $cnt.addEventListener("change", () => { if (!(parseInt($cnt.value, 10) > 0)) update(); });
+    qs("#lall", body).addEventListener("click", () => { o.count = 0; save(); update(); });
+    qs("#lloop", body).addEventListener("change", (e) => { o.loop = e.target.checked ? 1 : 0; save(); });
+    qs("#lgo", body).addEventListener("click", () => {
+      const words = listenPick(o, true);
+      if (!words.length) return toast("들을 단어가 없어요");
+      S.listenEst = listenEstimate(words, o, cal);
+      window.SVNative.start(JSON.stringify({ rate: o.rate, silent: true, loop: !!o.loop, start: 0,
+        items: words.map((w) => ({ title: w.word, sub: plain(w.meaning), parts: itemParts(w, o.ex) })) }));
+      body.innerHTML = `<div class="empty">음성 엔진 준비 중…</div>`;
+      setTimeout(redraw, 900);
+    });
+    update();
+  }
+
+  function drawPlayer(body, st, redraw) {
+    body.innerHTML = `<div class="lplayer">
+      <div class="lnow"><div class="lw" id="pw"></div><div class="lm" id="pm"></div></div>
+      <div class="progress" style="margin:14px 0 6px"><i id="pbar"></i></div>
+      <div class="lmeta"><span id="ppos"></span><span id="ptime"></span></div>
+      <div class="lbtns"><button class="btn" id="pprev" aria-label="이전">⏮</button><button class="btn primary" id="pplay"></button><button class="btn" id="pnext" aria-label="다음">⏭</button></div>
+      <button class="btn small" id="pstop" style="margin-top:10px">■ 끝내기 · 설정 다시 고르기</button>
+      <p class="desc">화면을 꺼도 계속 읽어요 · 이어폰 한 번 = 멈춤/재생, 두 번 = 다음</p></div>`;
+    const ctl = (a) => { window.SVNative.control(a); setTimeout(() => updatePlayer(body, Voice.state()), 300); };
+    qs("#pprev", body).addEventListener("click", () => ctl("prev"));
+    qs("#pnext", body).addEventListener("click", () => ctl("next"));
+    qs("#pplay", body).addEventListener("click", () => ctl(Voice.state().playing ? "pause" : "resume"));
+    qs("#pstop", body).addEventListener("click", () => { window.SVNative.control("stop"); setTimeout(redraw, 500); });
+    updatePlayer(body, st);
+  }
+  function updatePlayer(body, st) {
+    const pw = qs("#pw", body); if (!pw) return;
+    const total = st.total || 0, pos = st.finished ? total : Math.min(total, (st.idx || 0) + 1);
+    pw.textContent = st.title || (st.ttsReady ? "" : "준비 중…");
+    qs("#pm", body).textContent = st.sub || "";
+    qs("#pbar", body).style.width = `${total ? Math.round(((st.finished ? total : st.idx || 0) / total) * 100) : 0}%`;
+    qs("#ppos", body).textContent = st.finished ? `다 들었어요 · ${total}개` : `${pos} / ${total}`;
+    qs("#ptime", body).textContent = mmss(st.playedMs || 0) + (S.listenEst ? ` / ${fmtDur(S.listenEst)}` : "");
+    qs("#pplay", body).textContent = st.playing ? "⏸ 멈춤" : st.finished ? "↻ 처음부터" : "▶ 재생";
+  }
+
+  // ─────────────────────────────────────────
   // 백업 · 가져오기
   // ─────────────────────────────────────────
   function stamp() { const n = new Date(); return C.todayStr(n).replace(/-/g, "") + "_" + String(n.getHours()).padStart(2, "0") + String(n.getMinutes()).padStart(2, "0"); }
 
   async function deliverFile(name, text, type, how) {
+    if (window.SVNative && window.SVNative.saveFile) {     // 앱 안: 다운로드/SmartVocab 폴더에 바로 저장 (v4.11)
+      const where = window.SVNative.saveFile(name, type, text);
+      if (where) { toast(`저장했어요: ${where}`, 4000); return true; }
+      alertBox("저장 실패", "파일을 저장하지 못했어요. 저장 공간을 확인해 주세요.");
+      return false;
+    }
     const blob = new Blob([text], { type });
     if (how === "share") {
       const file = new File([blob], name, { type });
@@ -649,7 +1012,7 @@
 
   async function exportJson(how) {
     const ok = await deliverFile(`vocab_data_android_${stamp()}.json`, JSON.stringify(S.words, null, 4), "application/json", how);
-    if (ok) { S.meta.lastBackup = C.nowStr(); await saveMeta(); toast("백업 파일을 만들었습니다"); renderData(); }
+    if (ok) { S.meta.lastBackup = C.nowStr(); await saveMeta(); if (!window.SVNative) toast("백업 파일을 만들었습니다"); renderData(); }
   }
 
   function pickFile(multiple = false) {
@@ -683,6 +1046,42 @@
     }
     S.words = incoming; S.readOnly = false; S.testCount = null;
     await save(); toast(`${incoming.length}개 단어로 교체했습니다`); renderData();
+  }
+
+  /** ① JSON 합치기 (v4.11): 미리보기 → 현재 단어장 백업 → 합치기 */
+  async function mergeJson() {
+    if (S.readOnly) return alertBox("합치기 불가", "단어장이 손상된 상태라 합칠 수 없어요. 먼저 'JSON 불러오기'로 복구해 주세요.");
+    const f = await pickFile(); if (!f) return;
+    const text = await readText(f);
+    let incoming;
+    try { if (text === null) throw new Error("파일 인코딩을 읽을 수 없습니다."); incoming = C.normalizeAll(C.parseWordsJson(text)); }
+    catch (e) { return alertBox("합치기 실패", e.message); }
+    const { words, stats } = C.mergeWordbooks(S.words, incoming);
+    const ch = stats.added + stats.fromFile;
+    const go = await dialog({
+      title: "단어장 합치기",
+      msg: `이 기기 ${S.words.length}개 + 파일 ${incoming.length}개\n\n• 새로 추가: ${stats.added}개\n• 파일 쪽 기록이 더 최근: ${stats.fromFile}개 (파일 기록으로)\n• 이 기기 기록이 더 최근: ${stats.keptLocal}개 (그대로)\n• 똑같음: ${stats.same}개\n\n합친 뒤: ${words.length}개${ch ? "" : "\n(바뀌는 학습 기록 없음 · 동의어 등 빈 칸만 보충)"}\n\n합치기 전에 지금 단어장을 백업 파일로 저장합니다.`,
+      buttons: [{ label: "백업 후 합치기", value: true, kind: "primary" }, { label: "취소", value: null }],
+    });
+    if (!go) return;
+    if (S.words.length) {
+      const ok = await deliverFile(`vocab_data_android_합치기전_${stamp()}.json`, JSON.stringify(S.words, null, 4), "application/json", "download");
+      if (!ok && !(await confirmBox("백업 실패", "백업 파일을 저장하지 못했어요. 그래도 합칠까요?", "합치기", "취소", true))) return;
+    }
+    S.words = words; S.testCount = null;
+    await save();
+    toast(`합쳤어요: ${words.length}개 (추가 ${stats.added} · 파일 기록 ${stats.fromFile})`, 3500);
+    renderData();
+  }
+
+  /** ③ 자동 백업 (v4.11, 앱 전용, 켜고 끌 수 있음): 하루 한 번, 요일별 파일에 덮어쓰기 → 최대 7개 */
+  function autoBackup(force) {
+    if (!S.meta.autoBackup || !window.SVNative || !window.SVNative.saveFileReplace || S.readOnly || !S.words.length) return;
+    const t = today();
+    if (!force && S.meta.lastAutoBackup && S.meta.lastAutoBackup.slice(0, 10) === t) return;
+    const day = ["일", "월", "화", "수", "목", "금", "토"][new Date().getDay()];
+    const where = window.SVNative.saveFileReplace(`vocab_auto_${day}.json`, "application/json", JSON.stringify(S.words, null, 4));
+    if (where) { S.meta.lastAutoBackup = C.nowStr(); S.meta.lastBackup = S.meta.lastAutoBackup; saveMeta(); if (force) toast(`자동 백업: ${where}`, 3500); }
   }
 
   async function importCsv() {
@@ -719,12 +1118,45 @@
     return { rows, dup, bad };
   }
 
+  /** Claude에게 보낼 단어 추가 요청문 (v4.11): 사용자의 단어 추가 지침 + 이미 있는 단어 목록 */
+  function claudePrompt() {
+    const have = S.words.map((w) => w.word).sort().join(", ");
+    return [
+      "아래 [메모]의 단어들을 Smart Vocab 앱의 '붙여넣기로 단어 추가'용 CSV로 만들어 주세요.",
+      "",
+      "[규칙]",
+      "- 첫 줄 열 이름: word,meaning,synonyms,antonyms,related,note,example,example_ko",
+      "- word는 영어 소문자, meaning은 한국어 뜻 (여러 뜻은 쉼표로, 칸 전체를 큰따옴표로 감싸기)",
+      "- synonyms·antonyms·related는 세미콜론(;)으로 구분",
+      "- 메모에 적힌 동의어·반의어·헷갈리기 쉬운 단어도 상세 칸에만 적지 말고 각각 별도 단어(줄)로 추가하고, 원래 단어와 서로 동의어/반의어/관련어로 연결",
+      "- 아래 [이미 있는 단어]는 새 줄로 만들지 말 것 (연결 칸에는 적어도 됨)",
+      "- example은 그 단어를 쓴 쉬운 영어 예문 한 문장, 예문 속 해당 단어는 **로 감싸기 (예: She **abandoned** the plan.)",
+      "- example_ko는 예문의 자연스러운 한국어 해석",
+      "- 결과는 CSV만 코드 블록 하나로",
+      "",
+      `[이미 있는 단어] (${S.words.length}개)`,
+      have || "(없음)",
+      "",
+      "[메모]",
+      "(여기에 단어 메모를 붙여넣기)",
+    ].join("\n");
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* 앱 안에서는 아래로 */ }
+    if (window.SVNative && window.SVNative.copy) { window.SVNative.copy(text); return true; }
+    try {
+      const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand("copy"); ta.remove(); return ok;
+    } catch (e) { return false; }
+  }
+
   function renderPaste() {
     const P = S.paste;
     if (!P.preview) {
       $app.innerHTML = `
         <div class="topbar"><button class="icon-btn" data-go="home">← 홈</button><h1>붙여넣기로 단어 추가</h1></div>
         <p class="desc" style="margin:0 4px 10px">Claude가 정리해 준 단어 텍스트를 그대로 붙여넣으세요. 추가하기 전에 미리보기로 확인할 수 있어요.</p>
+        <button class="btn soft small" id="pprompt" style="margin:0 0 10px">📋 Claude 요청문 복사 <span class="sub">규칙 + 이미 있는 단어 목록</span></button>
         <textarea id="ptext" class="paste-box" spellcheck="false" autocapitalize="off" placeholder="word,meaning,synonyms,antonyms,related,note&#10;swift,신속한,prompt,,,&#10;prompt,&quot;신속한, 즉각적인&quot;,swift,,,">${esc(P.text)}</textarea>
         <div class="row2" style="margin-top:10px">
           <button class="btn" id="pclip">클립보드 붙여넣기</button>
@@ -733,6 +1165,10 @@
       bindGo();
       const $t = qs("#ptext");
       $t.addEventListener("input", () => { P.text = $t.value; persistUI(); });
+      qs("#pprompt").addEventListener("click", async () => {
+        const ok = await copyText(claudePrompt());
+        toast(ok ? "요청문을 복사했어요. Claude 대화창에 붙여넣고 [메모]만 채우세요" : "복사하지 못했어요", 3500);
+      });
       qs("#pclip").addEventListener("click", async () => {
         try { const t = await navigator.clipboard.readText(); if (t) { $t.value = P.text = t; toast("붙여넣었습니다"); } else toast("클립보드가 비어 있어요"); }
         catch (e) { toast("클립보드를 읽을 수 없어요. 입력칸을 길게 눌러 붙여넣어 주세요"); $t.focus(); }
@@ -820,14 +1256,33 @@
 
       <div class="section-label">불러오기</div>
       <div class="stack">
+        <button class="btn" id="mrj">JSON 합치기 <span class="sub">PC·다른 기기 단어장과</span></button>
         <button class="btn" id="imj">JSON 불러오기 <span class="sub">단어장 교체</span></button>
         <button class="btn" id="imc">CSV 가져오기 <span class="sub">여러 개 선택 가능</span></button>
         <button class="btn" data-go="paste">📋 붙여넣기로 단어 추가</button>
       </div>
-      <p class="desc">PC의 vocab_data.json을 폰으로 옮겨 불러오면 그대로 이어서 쓸 수 있어요. 두 단어장을 합치는 기능은 아직 없어서, 불러오면 이 기기 단어장이 교체됩니다.</p>
+      <p class="desc"><b>합치기</b>: 양쪽에 있는 단어는 최근에 공부한 쪽 기록을 남기고, 한쪽에만 있는 단어는 추가해요 (합치기 전에 지금 단어장을 백업 파일로 저장). <b>불러오기</b>: 이 기기 단어장을 파일 내용으로 통째로 바꿔요.</p>
 
       <div class="section-label">내보내기</div>
       <button class="btn" id="exc">CSV 내보내기 <span class="sub">학습 기록 포함</span></button>
+
+      <div class="section-label">자동 백업</div>
+      <div class="data-info">
+        <label class="switch" style="width:100%;justify-content:space-between"><span>하루 한 번 자동 백업</span><input type="checkbox" id="autob" ${S.meta.autoBackup ? "checked" : ""} ${window.SVNative && window.SVNative.saveFileReplace ? "" : "disabled"}></label>
+        <div class="desc" style="margin:6px 0 0">${window.SVNative && window.SVNative.saveFileReplace
+          ? `앱을 열 때 하루 한 번 <b>다운로드/SmartVocab/vocab_auto_요일.json</b>에 저장 (요일별 7개만 보관)${S.meta.lastAutoBackup ? ` · 마지막 자동 백업 ${esc(S.meta.lastAutoBackup)}` : ""}`
+          : "Smart Vocab 앱(APK)에서만 쓸 수 있어요"}</div>
+      </div>
+
+      <div class="section-label">학습 설정</div>
+      <div class="data-info">
+        <div class="lrow" style="border:0;min-height:40px"><span>하루 새 단어 출제 한도</span>
+          <div class="lcount"><input id="nlim" type="number" inputmode="numeric" min="0" value="${newLimit() || ""}" placeholder="끄기" aria-label="하루 새 단어 한도"><span>개</span></div></div>
+        <div class="desc" style="margin:4px 0 0">비우면 꺼짐 · 단어 추가는 그대로 되고, 테스트에 처음 나오는 새 단어 수만 하루 한도까지 · 오늘 푼 새 단어 ${newToday()}개</div>
+      </div>
+
+      <div class="section-label">PC에서 쓰기</div>
+      <p class="desc" style="margin-top:0">PC의 Chrome에서 <b>${esc(location.origin + location.pathname.replace(/index\.html$/, ""))}</b> 를 열면 같은 웹앱을 쓸 수 있어요 (주소창 오른쪽 설치 버튼으로 앱처럼 설치 가능). PC와 폰은 단어장이 따로 저장되니 <b>JSON 백업 → 다른 쪽에서 합치기</b>로 맞춰 주세요. 기존 PC 프로그램의 vocab_data.json도 합치기로 가져올 수 있어요.</p>
 
       <div class="section-label">실험</div>
       <a class="btn soft" href="listen-test.html" style="text-decoration:none">🎧 듣기 모드 시험 페이지 <span class="sub">단어장과 별개</span></a>`;
@@ -835,6 +1290,9 @@
     qs("#exj").addEventListener("click", () => exportJson("download"));
     const sh = qs("#shj"); sh && sh.addEventListener("click", () => exportJson("share"));
     qs("#imj").addEventListener("click", importJson);
+    qs("#mrj").addEventListener("click", mergeJson);
+    qs("#autob").addEventListener("change", (e) => { S.meta.autoBackup = e.target.checked; saveMeta(); if (e.target.checked) { autoBackup(true); renderData(); } });
+    qs("#nlim").addEventListener("change", (e) => { const n = Math.max(0, parseInt(e.target.value, 10) || 0); S.meta.newLimit = n; saveMeta(); e.target.value = n || ""; toast(n ? `하루 새 단어 ${n}개까지` : "새 단어 한도 끔"); });
     qs("#imc").addEventListener("click", importCsv);
     qs("#exc").addEventListener("click", () => deliverFile(`vocab_export_${stamp()}.csv`, C.wordsToCsv(S.words), "text/csv", "download"));
   }
@@ -878,7 +1336,8 @@
     if (back && back.scroll) requestAnimationFrame(() => window.scrollTo(0, back.scroll));
 
     // 날짜가 바뀐 채로 앱을 다시 열면 통계 갱신
-    document.addEventListener("visibilitychange", () => { if (!document.hidden && S.screen === "home") render(); });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) return; autoBackup(); if (S.screen === "home") render(); });
+    autoBackup();
     registerSW();
   }
 

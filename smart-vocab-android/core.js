@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  const APP_VERSION = "v4.10-android";
+  const APP_VERSION = "v4.11-android";
   const EF_DEFAULT = 2.5, EF_MIN = 1.3, EF_MAX = 3.0;
   const EF_GAIN = 0.1, EF_PENALTY = 0.2;
   const RELEARN_REQUIRED = 3;
@@ -170,6 +170,42 @@
     return changed;
   }
   function splitList(v) { return String(v || "").split(";").filter(Boolean); }
+
+  /** 두 단어장 합치기 (v4.11, PC ↔ 폰). 학습 계산은 하지 않고 기록을 '고르기'만 함
+   *  - 같은 단어(word)가 양쪽에 있으면 최근에 공부한 쪽(last_tested가 늦은 쪽) 기록을 남김
+   *    (같으면 출제 수가 많은 쪽, 그것도 같으면 이 기기 쪽). 동의어·메모·예문 등은 빈 칸만 서로 보충
+   *  - 한쪽에만 있는 단어는 그대로 추가. 원본 배열은 바꾸지 않음
+   *  반환: { words, stats: { added, fromFile, keptLocal, same } } */
+  function mergeWordbooks(local, incoming) {
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    const out = local.map(clone);
+    const idx = new Map(out.map((w, i) => [w.word, i]));
+    const ids = new Set(out.map((w) => w.id));
+    const extrasOf = (w) => ({ synonyms: w.synonyms, antonyms: w.antonyms, related: w.related, note: w.note,
+      example: w.example, example_ko: w.example_ko, extra: w.extra });
+    const stats = { added: 0, fromFile: 0, keptLocal: 0, same: 0 };
+    for (const src of incoming) {
+      const inc = clone(src), i = idx.get(inc.word);
+      if (i === undefined) {
+        if (!inc.id || ids.has(inc.id)) inc.id = uuid();
+        ids.add(inc.id); idx.set(inc.word, out.length); out.push(inc); stats.added++;
+        continue;
+      }
+      const loc = out[i], lt = loc.last_tested || "", it = inc.last_tested || "";
+      const tl = loc.test_cnt || 0, ti = inc.test_cnt || 0;
+      if (it > lt || (it === lt && ti > tl)) {
+        inc.id = loc.id;
+        const created = [loc.created_at, inc.created_at].filter(Boolean).sort()[0];
+        if (created) inc.created_at = created;
+        mergeExtras(inc, extrasOf(loc));
+        out[i] = inc; stats.fromFile++;
+      } else {
+        mergeExtras(loc, extrasOf(inc));
+        if (it === lt && ti === tl) stats.same++; else stats.keptLocal++;
+      }
+    }
+    return { words: out, stats };
+  }
 
   /** 'She **abandoned** it.' → [["She ", false], ["abandoned", true], [" it.", false]] (PC example_parts와 동일)
    *  ** 표시가 없으면 단어와 같은 부분을 찾아 굵게 (대소문자 무시) */
@@ -377,7 +413,7 @@
     newWord, normalizeWord, normalizeAll, parseWordsJson,
     isDue, isReviewDue, applyAnswer, applyPractice, errorRate,
     pickReviewWords, pickHighErrorWords, statusText,
-    parseCsvRows, parseCsvText, wordsToCsv, normList, mergeExtras, splitList, exampleParts, EXTRA_FIELDS, EXAMPLE_FIELDS,
+    parseCsvRows, parseCsvText, wordsToCsv, normList, mergeExtras, mergeWordbooks, splitList, exampleParts, EXTRA_FIELDS, EXAMPLE_FIELDS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.VocabCore = api;
