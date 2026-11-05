@@ -501,7 +501,9 @@
       const rate = (S.meta.listen && S.meta.listen.rate) || 1;
       if (Voice.native()) {
         const st = Voice.state();
-        if (st.running && !st.oneShot && st.started) { toast("듣기 모드 재생 중에는 쓸 수 없어요"); return; }
+        // v4.11.3: 듣기 모드가 남아 있으면(재생·멈춤·끝난 뒤 대기 모두) 끝내고 이 단어를 읽음
+        //  — 앱의 START는 지금 목록을 멈추고 새 목록으로 바꾸고, 한 번 읽기가 끝나면 서비스도 닫힘
+        if (st.running && !st.oneShot && st.started) toast("듣기 모드를 끝냈어요");
         window.SVNative.start(JSON.stringify({ oneShot: true, loop: false, silent: false, rate,
           items: [{ title: parts[0].t, sub: parts[1] ? parts[1].t : "", parts }] }));
         return;
@@ -742,18 +744,35 @@
   const hasBlank = (w) => !!w.example && C.exampleParts(w.example, w.word).some(([, b]) => b);
   function clozeCandidates() { return S.words.filter(hasBlank); }
 
+  /** 뜻을 쉼표·빗금 등으로 나눈 조각 (공백 제거, 2글자 이상) — 뜻이 겹치는 단어를 선택지에서 빼는 데 씀 */
+  function meaningTokens(w) {
+    return new Set(String(w.meaning || "").split(/[,/;·|()\[\]]+/).map((t) => t.replace(/\s+/g, "")).filter((t) => t.length >= 2));
+  }
+  const pairKey = (a, b) => [a.word, b.word].sort().join("|");
+
   function startCloze() {
     const cands = clozeCandidates();
     if (!cands.length) return alertBox("빈칸 연습", "예문이 있는 단어가 없어요. 예문이 있는 단어로 연습할 수 있어요.");
     if (S.words.length < 4) return alertBox("빈칸 연습", "선택지를 만들려면 단어가 4개 이상 필요해요.");
     const n = Math.min(S.testCount || 10, cands.length);
+    const avoid = new Set(S.meta.clozeAvoid || []);
     const items = shuffle(cands.slice()).slice(0, n).map((w) => {
       const opts = [w], used = new Set([w.word]);
       const sentence = String(w.example).toLowerCase();
-      const ok = (x) => x && !used.has(x.word) && !sentence.includes(x.word);
-      for (const [x] of linkedWords(w)) { if (opts.length >= 3) break; if (ok(x)) { opts.push(x); used.add(x.word); } }   // 헷갈리는 단어 먼저 (최대 2개)
+      // v4.11.2: 빈칸에 들어가도 말이 되는 오답을 막기 위해 동의어·반의어·관련어, 뜻이 겹치는 단어,
+      //          '이것도 맞아요'로 표시한 짝은 선택지에서 뺌
+      const linked = new Set(linkedWords(w).map(([x]) => x.word));
+      const wm = meaningTokens(w);
+      const ok = (x) => x && !used.has(x.word) && !sentence.includes(x.word) && !linked.has(x.word)
+        && !avoid.has(pairKey(w, x)) && ![...meaningTokens(x)].some((t) => wm.has(t));
       const pool = shuffle(S.words.filter(ok));
       while (opts.length < 4 && pool.length) { const x = pool.pop(); if (!used.has(x.word)) { opts.push(x); used.add(x.word); } }
+      if (opts.length < 4) {   // 단어장이 작아 모자랄 때만: 뜻 겹침 조건을 풀고 채움 (동의어·표시한 짝은 계속 뺌)
+        const syn = new Set(C.splitList(w.synonyms).map((t) => t.toLowerCase()));
+        const more = shuffle(S.words.filter((x) => !used.has(x.word) && !sentence.includes(x.word) && !syn.has(x.word)
+          && !C.splitList(x.synonyms).some((t) => t.toLowerCase() === w.word) && !avoid.has(pairKey(w, x))));
+        while (opts.length < 4 && more.length) { const x = more.pop(); opts.push(x); used.add(x.word); }
+      }
       return { w, opts: shuffle(opts), pick: null };
     });
     S.testCount = null;
@@ -793,15 +812,28 @@
         ${answered && w.example_ko ? `<div class="ex-ko" style="margin-top:8px">${esc(w.example_ko)}</div>` : ""}
       </div>
       <div class="zopts">${it.opts.map((o, i) => {
-        const cls = !answered ? "" : o === w ? " right" : o === it.pick ? " wrongpick" : " dim";
+        const cls = !answered ? "" : o === w || (o === it.pick && it.accepted) ? " right" : o === it.pick ? " wrongpick" : " dim";
         return `<button class="btn zopt${cls}" data-z="${i}" ${answered ? "disabled" : ""}><span class="zn">${i + 1}</span><span class="zw">${esc(o.word)}</span>${answered ? `<span class="zm">${esc(o.meaning)}</span>` : ""}</button>`;
       }).join("")}</div>
+      ${answered && it.pick !== w && !it.accepted ? `<button class="btn soft" id="zaccept" style="width:100%;margin-top:10px">🤔 고른 단어도 맞는 것 같아요 <span class="sub">정답 처리 · 이 짝은 다음부터 같이 안 나옴</span></button>` : ""}
+      ${answered && it.accepted ? `<div class="desc" style="text-align:center;margin-top:10px">정답으로 처리했어요 · ${esc(w.word)}·${esc(it.pick.word)}는 앞으로 같은 문제에 같이 나오지 않아요</div>` : ""}
       ${answered ? `<div class="judge"><button class="btn primary" id="znext">${Z.idx + 1 < Z.items.length ? "다음 (Enter)" : "결과 보기"}</button></div>` : `<div class="kbd-hint">키보드 1~4로 고르기</div>`}`;
     qs("#zstop").addEventListener("click", async () => {
       if (await confirmBox("빈칸 연습", "여기서 그만할까요? (학습 기록에는 원래 반영되지 않아요)", "그만하기", "계속하기")) { Z.done = true; Z.items = Z.items.slice(0, Z.idx + (answered ? 1 : 0)); render(); }
     });
     $app.querySelectorAll("[data-z]").forEach((b) => b.addEventListener("click", () => clozePick(+b.dataset.z)));
     const nx = qs("#znext"); nx && nx.addEventListener("click", clozeNext);
+    const za = qs("#zaccept"); za && za.addEventListener("click", clozeAccept);
+  }
+  /** 오답으로 고른 단어도 문장에 맞을 때: 정답 처리 + 그 짝을 앞으로 선택지에서 뺌 (학습 기록은 그대로) */
+  function clozeAccept() {
+    const Z = S.cloze; if (!Z || Z.done) return;
+    const it = Z.items[Z.idx]; if (!it.pick || it.pick === it.w || it.accepted) return;
+    it.accepted = true; Z.ok++;
+    const k = Z.wrong.lastIndexOf(it.w); if (k >= 0) Z.wrong.splice(k, 1);
+    const st = S.meta.cloze || { n: 0, ok: 0 }; st.ok++; S.meta.cloze = st;
+    const av = new Set(S.meta.clozeAvoid || []); av.add(pairKey(it.w, it.pick)); S.meta.clozeAvoid = [...av];
+    saveMeta(); render();
   }
   function clozePick(i) {
     const Z = S.cloze; if (!Z || Z.done) return;
@@ -1235,6 +1267,47 @@
     });
   }
 
+  // ── 버전 정보 (백업 화면 맨 아래) ──
+  function nativeInfo() {
+    try { return window.SVNative && window.SVNative.info ? JSON.parse(window.SVNative.info()) : null; } catch (e) { return null; }
+  }
+  let cacheVer = "";   // 지금 화면 파일을 담고 있는 서비스 워커 캐시 이름 (sv-x.y.z)
+  function versionText() {
+    const n = nativeInfo();
+    return [
+      `웹앱: ${C.APP_VERSION}`,
+      `화면 파일: ${cacheVer || "확인 중"}`,
+      n ? `앱(APK): ${n.app} · Android SDK ${n.sdk} · ${n.model}` : "앱(APK): 아님 (브라우저에서 실행 중)",
+    ].join("\n");
+  }
+  function versionHtml() {
+    const n = nativeInfo();
+    return `웹앱: <b>${esc(C.APP_VERSION)}</b><br>
+      화면 파일: <b id="cachever">${esc(cacheVer || "확인 중")}</b><br>
+      앱(APK): ${n ? `<b>${esc(String(n.app))}</b> · Android SDK ${esc(String(n.sdk))} · ${esc(String(n.model))}` : "<b>아님</b> (브라우저에서 실행 중)"}
+      <div class="desc" style="margin:6px 0 0">웹앱·화면 파일은 인터넷으로 저절로 바뀌고, 앱(APK)은 새 파일을 설치해야 바뀌어요.</div>
+      <div class="desc" id="vstat" style="margin:4px 0 0"></div>`;
+  }
+  async function fillCacheVersion() {
+    try {
+      if (!cacheVer && window.caches) cacheVer = (await caches.keys()).filter((k) => /^sv-/.test(k)).sort().pop() || "없음";
+    } catch (e) { cacheVer = "확인 불가"; }
+    const el = qs("#cachever"); if (el) el.textContent = cacheVer;
+  }
+  async function checkLatest() {
+    const st = qs("#vstat"); if (!st) return;
+    st.textContent = "확인 중…";
+    try {
+      const txt = await fetch("sw.js?t=" + Date.now(), { cache: "no-store" }).then((r) => { if (!r.ok) throw 0; return r.text(); });
+      const latest = (txt.match(/VERSION\s*=\s*"([^"]+)"/) || [])[1] || "";
+      if (!latest) throw 0;
+      if (latest === cacheVer) { st.innerHTML = `최신 버전이에요 (${esc(latest)})`; return; }
+      st.innerHTML = `새 버전 <b>${esc(latest)}</b> 이 있어요 — 화면 아래 <b>업데이트</b> 버튼을 누르세요`;
+      const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+      reg && reg.update();   // 새 파일을 받으면 기존 업데이트 안내 막대가 뜸
+    } catch (e) { st.textContent = "인터넷 연결을 확인해 주세요"; }
+  }
+
   function renderData() {
     if (S.screen !== "data") return;
     const share = canShareFiles();
@@ -1285,8 +1358,18 @@
       <p class="desc" style="margin-top:0">PC의 Chrome에서 <b>${esc(location.origin + location.pathname.replace(/index\.html$/, ""))}</b> 를 열면 같은 웹앱을 쓸 수 있어요 (주소창 오른쪽 설치 버튼으로 앱처럼 설치 가능). PC와 폰은 단어장이 따로 저장되니 <b>JSON 백업 → 다른 쪽에서 합치기</b>로 맞춰 주세요. 기존 PC 프로그램의 vocab_data.json도 합치기로 가져올 수 있어요.</p>
 
       <div class="section-label">실험</div>
-      <a class="btn soft" href="listen-test.html" style="text-decoration:none">🎧 듣기 모드 시험 페이지 <span class="sub">단어장과 별개</span></a>`;
+      <a class="btn soft" href="listen-test.html" style="text-decoration:none">🎧 듣기 모드 시험 페이지 <span class="sub">단어장과 별개</span></a>
+
+      <div class="section-label">버전 정보</div>
+      <div class="data-info" id="verinfo">${versionHtml()}</div>
+      <div class="row2" style="margin-top:8px">
+        <button class="btn" id="vchk">최신 버전 확인</button>
+        <button class="btn" id="vcopy">버전 정보 복사</button>
+      </div>`;
     bindGo();
+    fillCacheVersion();
+    qs("#vchk").addEventListener("click", checkLatest);
+    qs("#vcopy").addEventListener("click", () => copyText(versionText()));
     qs("#exj").addEventListener("click", () => exportJson("download"));
     const sh = qs("#shj"); sh && sh.addEventListener("click", () => exportJson("share"));
     qs("#imj").addEventListener("click", importJson);
