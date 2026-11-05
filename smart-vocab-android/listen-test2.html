@@ -110,6 +110,8 @@ ol.how b { color: var(--text); }
   <div class="card" style="padding:4px 14px">
     <div class="opt"><div>방식<small id="modeDesc"></small></div>
       <div class="seg" id="segMode"><button data-v="A">A</button><button data-v="A2">A2</button><button data-v="B">B</button><button data-v="C">C</button></div></div>
+    <div class="opt"><div>시스템이 멈추면 다시 재생<small>끄기 = 멈춘 그대로 두고 기록만 (정확한 시험용)</small></div>
+      <div class="seg" id="segRetry"><button data-v="0">끄기</button><button data-v="1">켜기</button></div></div>
   </div>
   <p style="margin:6px 4px 0;font-size:12px;color:var(--text-3)">A = 짧은 파일 교체 (1차 결과: 화면 꺼지면 멈춤) · <b>A2 = 5초 이상 파일 교체 (본 기능 1순위)</b> · B = Web Audio로 이어 재생 · C = 긴 파일 하나를 반복 (가장 안전한 대비책). 멈춘 상태에서만 바꿀 수 있어요.</p>
 
@@ -120,11 +122,11 @@ ol.how b { color: var(--text); }
   <div class="section-label">시험 방법 (방식마다)</div>
   <div class="card">
     <ol class="how">
-      <li><b>A2부터.</b> <b>화면 켠 채 30초</b> — 삐삐 → 삐— 가 반복되며 음이 점점 높아지는지</li>
+      <li><b>C부터.</b> <b>화면 켠 채 30초</b> — 삐삐 → 삐— 가 반복되며 음이 점점 높아지는지</li>
       <li><b>화면 끄고 3분</b> — 이어폰으로 소리가 계속 나는지 직접 들어 보기. 켠 뒤 기록의 "○개 재생 (계속 재생됐다면 약 ○개)" 두 숫자가 비슷하면 정상</li>
       <li><b>화면 꺼진 채 이어폰 버튼</b> — 한 번 누르기(멈춤) → 몇 초 뒤 한 번 더(재생) → 두 번 누르기(다음: 음이 건너뜀). 버튼마다 3초쯤 간격</li>
       <li><b>잠금 화면 알림의 버튼</b>도 한 번씩 눌러 보기 (이어폰과 구분하려고 따로)</li>
-      <li><b>A2 → C → B 순서로</b>, 각각 화면 끄고 2~3분. 이어폰 버튼은 잘 되는 방식에서 한 번만 해도 충분. 끝나면 <b>기록 복사</b> → Claude에게 붙여넣기</li>
+      <li><b>C → B 순서로</b>, 다시 재생 <b>끄기</b> 상태에서 각각 화면 끄고 2분. <b>꺼진 동안 소리가 들렸는지 꼭 메모</b>. 이어폰 버튼은 소리가 나는 방식에서만. 끝나면 <b>기록 복사</b> → Claude에게 붙여넣기</li>
     </ol>
   </div>
 </main>
@@ -138,7 +140,7 @@ ol.how b { color: var(--text); }
     get(k, d) { try { const v = localStorage.getItem("lt2_" + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem("lt2_" + k, JSON.stringify(v)); } catch (e) {} },
   };
-  let mode = ls.get("mode2", "A2");
+  let mode = ls.get("mode3", "C");
   const MODE_DESC = { A: "짧은 파일(1~2초)을 하나씩 바꿔 재생", A2: "항목 하나 = 5초 이상 파일 하나, 바꿔 재생", B: "Web Audio로 이어 재생 (+무음 오디오)", C: "긴 파일 하나를 반복" };
 
   // ── 기록 ──
@@ -253,13 +255,20 @@ ol.how b { color: var(--text); }
   setInterval(drawNums, 1000);
 
   // 우리가 멈춘 게 아닌 'pause' → 시스템이 멈춘 것
+  let retry = ls.get("retry", 0), sysPauses = 0;
+  // 재생 위치가 실제로 얼마나 진행됐는지 (C: 긴 파일 위치, B: Web Audio 시계) — 꺼진 동안 '진행은 되는데 소리만 없음'을 구분
+  let posAcc = 0, posPrev = null;
+  function trackPos(t) { if (posPrev !== null && playing) { let d = t - posPrev; if (d < 0) d += LONG_SEC; if (d < 5) posAcc += d; } posPrev = t; }
   function watchPause(el, name) {
     el.addEventListener("pause", () => {
       if (el._expect) { el._expect = false; return; }
-      if (playing && !el.ended) {
-        log(`${name}이(가) 시스템에 의해 멈춤 (화면 ${document.hidden ? "꺼짐" : "켜짐"}) → 다시 재생 시도`, "bad");
-        el.play().then(() => log(`${name} 다시 재생됨`)).catch((e) => log(`${name} 다시 재생 실패: ${e.name}`, "bad"));
-      }
+      if (!playing || el.ended) return;
+      sysPauses++;
+      if (!retry) { if (sysPauses <= 3) log(`${name}이(가) 시스템에 의해 멈춤 (화면 ${document.hidden ? "꺼짐" : "켜짐"}) — 그대로 둠`, "bad"); return; }
+      if (Date.now() - (el._lastRetry || 0) < 3000) return;    // 3초에 한 번만 다시 시도
+      el._lastRetry = Date.now();
+      log(`${name}이(가) 시스템에 의해 멈춤 (화면 ${document.hidden ? "꺼짐" : "켜짐"}) → 다시 재생 시도`, "bad");
+      el.play().then(() => log(`${name} play() 수락됨 (소리가 실제로 나는지는 귀로 확인)`)).catch((e) => log(`${name} 다시 재생 실패: ${e.name}`, "bad"));
     });
     el.addEventListener("error", () => log(`${name} 오류: ${el.error && el.error.code}`, "bad"));
   }
@@ -318,9 +327,10 @@ ol.how b { color: var(--text); }
   const cEl = new Audio(LONG_URL); cEl.loop = true; cEl.preload = "auto"; watchPause(cEl, "C 오디오");
   const clipAt = (t) => { let k = 0; while (k + 1 < OFFSETS.length && OFFSETS[k + 1] <= t) k++; return k; };
   let cLast = 0, cSync = false;      // cSync: 위치를 옮기는 중 (옮긴 뒤 'seeked'에서 기준 다시 잡음)
-  cEl.addEventListener("seeked", () => { cSync = false; cLast = clipAt(cEl.currentTime + 0.01); });
+  cEl.addEventListener("seeked", () => { cSync = false; cLast = clipAt(cEl.currentTime + 0.01); posPrev = cEl.currentTime; });
   cEl.addEventListener("timeupdate", () => {
     if (!playing || mode !== "C" || cEl.seeking || cSync) return;
+    trackPos(cEl.currentTime);
     const k = clipAt(cEl.currentTime);
     if (k === cLast) return;
     // 정상 진행(1~2칸 앞으로, 끝→처음 반복 포함)일 때만 셈. 그보다 크게 바뀌면 위치 이동(시작·건너뛰기)이라 세지 않음
@@ -359,7 +369,7 @@ ol.how b { color: var(--text); }
     playing = true; playStartedAt = Date.now();
     if (!started) {
       started = true; count = 0; hiddenTotal = 0;
-      log(`── 시작: 방식 ${mode} (${MODE_DESC[mode]}) · 항목당 ${itemSec().toFixed(1)}초 · Media Session ${"mediaSession" in navigator ? "지원" : "미지원"}`, "hl");
+      log(`── 시작: 방식 ${mode} (${MODE_DESC[mode]}) · 항목당 ${itemSec().toFixed(1)}초 · 다시 재생 ${retry ? "켜기" : "끄기"} · Media Session ${"mediaSession" in navigator ? "지원" : "미지원"}`, "hl");
     } else log(`▶ 재생 (${src})`, src.includes("이어폰") ? "hl" : "");
     show(); setState();
     await M[mode].start();
@@ -397,19 +407,27 @@ ol.how b { color: var(--text); }
   // ── 화면 꺼짐/켜짐 ──
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      hiddenAt = Date.now(); hideCount = count; lastBeat = Date.now();
+      hiddenAt = Date.now(); hideCount = count; lastBeat = Date.now(); sysPauses = 0;
+      posAcc = 0; posPrev = mode === "C" ? cEl.currentTime : null; window._ctx0 = ctx ? ctx.currentTime : null;
       log(`🌙 화면 꺼짐/숨김 (${playing ? "재생 중" : "멈춤 상태"}, 방식 ${mode})`, "hl");
     } else if (hiddenAt) {
       const dur = Date.now() - hiddenAt, n = count - hideCount, expect = Math.floor(dur / 1000 / itemSec());
       hiddenTotal += n;
       const ok = n > 0 && n >= expect * 0.8;
       log(`☀ 화면 켜짐 — 꺼진 ${minsec(dur)} 동안 ${n}개 재생 (계속 재생됐다면 약 ${expect}개)${lastDoneAt ? ` · 마지막 완료: ${minsec(Date.now() - lastDoneAt)} 전` : ""}${ctx ? ` · Web Audio ${ctx.state}` : ""}`, ok || !expect ? "hl" : "bad");
+      const pos = mode === "C" ? `재생 위치 ${posAcc.toFixed(0)}초 진행` : mode === "B" && ctx && window._ctx0 !== null ? `Web Audio 시계 ${(ctx.currentTime - window._ctx0).toFixed(0)}초 진행` : "";
+      log(`   └ 꺼진 ${Math.round(dur / 1000)}초 중 ${pos || "위치 확인 없음(A·A2)"} · 시스템 멈춤 ${sysPauses}번`, sysPauses ? "bad" : "");
       hiddenAt = 0; drawNums();
     }
   });
   document.addEventListener("freeze", () => log("❄ 페이지 정지(freeze)", "bad"));
   document.addEventListener("resume", () => log("페이지 정지 해제(resume)"));
 
+  function drawRetry() { $("segRetry").querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.v === retry)); }
+  $("segRetry").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    retry = +b.dataset.v; ls.set("retry", retry); drawRetry(); log(`시스템 멈춤 시 다시 재생: ${retry ? "켜기" : "끄기"}`);
+  });
   // ── 방식 선택 ──
   function drawMode() {
     $("segMode").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === mode));
@@ -419,7 +437,7 @@ ol.how b { color: var(--text); }
     const b = e.target.closest("button"); if (!b) return;
     if (playing) return toast("멈춘 뒤 바꿔 주세요");
     if (b.dataset.v === mode) return;
-    mode = b.dataset.v; ls.set("mode2", mode); drawMode(); show();
+    mode = b.dataset.v; ls.set("mode3", mode); drawMode(); show();
     if (started) { started = false; playedMs = 0; log(`방식 ${mode}로 변경 — 다음 시작부터 새로 셈`); setState(); }
   });
 
@@ -436,7 +454,7 @@ ol.how b { color: var(--text); }
   });
 
   if (logLines.length) logLines.push([clock(), "── 페이지 다시 열림 (위는 지난 기록)", "hl"]);
-  drawMode(); show(); drawLog(); setState(); drawNums();
+  drawMode(); drawRetry(); show(); drawLog(); setState(); drawNums();
 })();
 </script>
 </body>
