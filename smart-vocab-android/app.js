@@ -1280,13 +1280,73 @@
       n ? `앱(APK): ${n.app} · Android SDK ${n.sdk} · ${n.model}` : "앱(APK): 아님 (브라우저에서 실행 중)",
     ].join("\n");
   }
+  // ── 앱(APK) 안 업데이트 (v4.12 · 앱 0.3~) ──
+  //  빌드가 끝나면 공개 사이트 app/ 폴더에 SmartVocab.apk + latest.json {code, name, size}을 올려 둠
+  //  0.3 이상: 앱이 직접 받아 설치 화면을 엶 / 0.2: 이번 한 번만 브라우저로 받아 직접 설치
+  const APP_RAW_APK = "https://raw.githubusercontent.com/archsymp/smart-vocab/main/smart-vocab-android/app/SmartVocab.apk";
+  let appLatest = null;   // 마지막으로 확인한 latest.json
+  async function fetchAppLatest() {
+    const j = await fetch("app/latest.json?t=" + Date.now(), { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (j && j.code) appLatest = j;
+    return appLatest;
+  }
+  function appNeedsUpdate() {
+    const n = nativeInfo();
+    if (!n || !appLatest) return false;
+    return n.code ? appLatest.code > n.code : true;   // code가 없으면 0.2 이하 → 새 버전 있음
+  }
+  function appUpdateHtml() {
+    const n = nativeInfo();
+    if (!n || !appLatest) return "";
+    if (!appNeedsUpdate()) return `<div class="desc" style="margin:4px 0 0">앱(APK)도 최신이에요 (${esc(appLatest.name)} · build ${appLatest.code})</div>`;
+    if (n.updater) return `<div class="desc" style="margin:4px 0 0">새 앱 버전 <b>${esc(appLatest.name)}</b> (build ${appLatest.code})이 있어요</div>
+      <button class="btn primary" data-appupd style="width:100%;margin-top:8px">📲 앱 업데이트</button>`;
+    return `<div class="desc" style="margin:4px 0 0">새 앱 버전 <b>${esc(appLatest.name)}</b>이 있어요. 0.3부터는 앱 안에서 업데이트돼요 — <b>이번 한 번만</b> 직접 받아 설치해 주세요 (덮어 설치, 단어장 유지).</div>
+      <a class="btn primary" href="${APP_RAW_APK}" style="width:100%;margin-top:8px;text-decoration:none">📥 새 앱 받기 (브라우저로 열림)</a>`;
+  }
+  let appUpdTimer = 0;
+  function startAppUpdate() {
+    if (!appLatest || !window.SVNative || !window.SVNative.update) return;
+    const url = new URL("app/SmartVocab.apk?t=" + Date.now(), location.href).href;
+    const r = window.SVNative.update(url, appLatest.code);
+    if (r === "permission") return alertBox("설치 허용이 필요해요", "방금 열린 설정 화면에서 'Smart Vocab'의 '이 출처 허용'을 켜고 돌아와서 [앱 업데이트]를 다시 눌러 주세요. (처음 한 번만)");
+    if (r === "bad") return toast("업데이트 주소가 올바르지 않아요");
+    clearInterval(appUpdTimer);
+    appUpdTimer = setInterval(() => {
+      let s = {}; try { s = JSON.parse(window.SVNative.updateState()); } catch (e) { }
+      const msg = s.phase === "downloading" ? `새 앱 받는 중… ${s.pct || 0}%` : s.phase === "ready" ? "설치 화면에서 [업데이트]를 눌러 주세요" : s.phase === "error" ? `업데이트 실패: ${s.err}` : "";
+      document.querySelectorAll("[data-appupd-msg]").forEach((el) => { el.textContent = msg; });
+      if (msg) toast(msg, 1500);
+      if (s.phase !== "downloading") clearInterval(appUpdTimer);
+    }, 700);
+  }
+  function bindAppUpdate(root) {
+    (root || document).querySelectorAll("[data-appupd]").forEach((b) => b.addEventListener("click", startAppUpdate));
+  }
+  /** 앱을 열 때마다 확인(작은 파일 하나) → 새 앱이 있으면 위쪽 막대로 알림. ✕로 닫으면 그 버전은 다시 안 띄움 (백업 화면에선 계속 보임) */
+  async function checkAppOnBoot() {
+    if (!nativeInfo()) return;
+    await fetchAppLatest();
+    if (!appNeedsUpdate() || S.meta.appDismiss === appLatest.code || document.querySelector(".update-bar")) return;
+    const n = nativeInfo();
+    const bar = document.createElement("div"); bar.className = "update-bar";
+    bar.innerHTML = n.updater
+      ? `새 앱 버전 ${esc(appLatest.name)}이 있어요 <span data-appupd-msg></span><button data-appupd>업데이트</button><button data-x aria-label="닫기">✕</button>`
+      : `새 앱 버전 ${esc(appLatest.name)} — 이번 한 번만 직접 설치<a href="${APP_RAW_APK}" style="margin-left:auto;color:inherit;font-weight:700">받기</a><button data-x aria-label="닫기">✕</button>`;
+    document.body.appendChild(bar);
+    bindAppUpdate(bar);
+    bar.querySelector("[data-x]").addEventListener("click", () => { S.meta.appDismiss = appLatest.code; saveMeta(); bar.remove(); });
+  }
+
   function versionHtml() {
     const n = nativeInfo();
     return `웹앱: <b>${esc(C.APP_VERSION)}</b><br>
       화면 파일: <b id="cachever">${esc(cacheVer || "확인 중")}</b><br>
       앱(APK): ${n ? `<b>${esc(String(n.app))}</b> · Android SDK ${esc(String(n.sdk))} · ${esc(String(n.model))}` : "<b>아님</b> (브라우저에서 실행 중)"}
       <div class="desc" style="margin:6px 0 0">웹앱·화면 파일은 인터넷으로 저절로 바뀌고, 앱(APK)은 새 파일을 설치해야 바뀌어요.</div>
-      <div class="desc" id="vstat" style="margin:4px 0 0"></div>`;
+      <div class="desc" id="vstat" style="margin:4px 0 0"></div>
+      <div id="appupd">${appUpdateHtml()}</div>
+      <div class="desc" data-appupd-msg style="margin:4px 0 0"></div>`;
   }
   async function fillCacheVersion() {
     try {
@@ -1294,15 +1354,21 @@
     } catch (e) { cacheVer = "확인 불가"; }
     const el = qs("#cachever"); if (el) el.textContent = cacheVer;
   }
+  async function refreshAppUpdate() {
+    await fetchAppLatest();
+    const el = qs("#appupd"); if (!el) return;
+    el.innerHTML = appUpdateHtml(); bindAppUpdate(el);
+  }
   async function checkLatest() {
     const st = qs("#vstat"); if (!st) return;
     st.textContent = "확인 중…";
+    refreshAppUpdate();
     try {
       const txt = await fetch("sw.js?t=" + Date.now(), { cache: "no-store" }).then((r) => { if (!r.ok) throw 0; return r.text(); });
       const latest = (txt.match(/VERSION\s*=\s*"([^"]+)"/) || [])[1] || "";
       if (!latest) throw 0;
       if (latest === cacheVer) { st.innerHTML = `최신 버전이에요 (${esc(latest)})`; return; }
-      st.innerHTML = `새 버전 <b>${esc(latest)}</b> 이 있어요 — 화면 아래 <b>업데이트</b> 버튼을 누르세요`;
+      st.innerHTML = `새 버전 <b>${esc(latest)}</b> 이 있어요 — 화면 위 <b>업데이트</b> 버튼을 누르세요`;
       const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
       reg && reg.update();   // 새 파일을 받으면 기존 업데이트 안내 막대가 뜸
     } catch (e) { st.textContent = "인터넷 연결을 확인해 주세요"; }
@@ -1368,6 +1434,7 @@
       </div>`;
     bindGo();
     fillCacheVersion();
+    if (nativeInfo()) refreshAppUpdate();
     qs("#vchk").addEventListener("click", checkLatest);
     qs("#vcopy").addEventListener("click", () => copyText(versionText()));
     qs("#exj").addEventListener("click", () => exportJson("download"));
@@ -1422,6 +1489,7 @@
     document.addEventListener("visibilitychange", () => { if (document.hidden) return; autoBackup(); if (S.screen === "home") render(); });
     autoBackup();
     registerSW();
+    checkAppOnBoot();
   }
 
   // ── 오프라인 동작 + 업데이트 안내 ──
