@@ -481,9 +481,11 @@
   //  - 웹앱(Chrome): Web Speech API (화면이 켜져 있을 때만)
   // ─────────────────────────────────────────
   const plain = (t) => String(t || "").replace(/\*\*/g, "").trim();
+  /** 소리로 읽을 뜻: [동사] 같은 품사 표시는 빼고 읽음 (화면에는 그대로 보임) */
+  const spokenMeaning = (t) => plain(t).replace(/\[[^\]]*\]\s*/g, "").replace(/\s*;\s*/g, ", ").replace(/^[,\s]+|[,\s]+$/g, "");
   /** 읽을 조각: {t: 글, l: en|ko, g: 뒤에 쉬는 ms} */
   function wordParts(w, more) {
-    return [{ t: w.word, l: "en", g: 700 }, { t: plain(w.meaning), l: "ko", g: more ? 600 : 1000 }];
+    return [{ t: w.word, l: "en", g: 700 }, { t: spokenMeaning(w.meaning), l: "ko", g: more ? 600 : 1000 }];
   }
   function exampleParts(w, more) {
     if (!w.example) return [];
@@ -1159,6 +1161,7 @@
       "[규칙]",
       "- 첫 줄 열 이름: word,meaning,synonyms,antonyms,related,note,example,example_ko",
       "- word는 영어 소문자, meaning은 한국어 뜻 (여러 뜻은 쉼표로, 칸 전체를 큰따옴표로 감싸기)",
+      "- meaning 앞에 한글 품사를 대괄호로 붙이기: [동사] [명사] [형용사] [부사] [전치사] [접속사] [숙어] 중에서 (영어 약어 v·n·adj 쓰지 말 것). 품사가 여러 개면 세미콜론으로 나누기 (예: \"[동사] 버리다, 포기하다; [명사] 방종\")",
       "- synonyms·antonyms·related는 세미콜론(;)으로 구분",
       "- 메모에 적힌 동의어·반의어·헷갈리기 쉬운 단어도 상세 칸에만 적지 말고 각각 별도 단어(줄)로 추가하고, 원래 단어와 서로 동의어/반의어/관련어로 연결",
       "- 아래 [이미 있는 단어]는 새 줄로 만들지 말 것 (연결 칸에는 적어도 됨)",
@@ -1341,9 +1344,9 @@
   function versionHtml() {
     const n = nativeInfo();
     return `웹앱: <b>${esc(C.APP_VERSION)}</b><br>
-      화면 파일: <b id="cachever">${esc(cacheVer || "확인 중")}</b><br>
+      화면 파일: <b id="cachever">${esc(cacheVer || "확인 중")}</b>${n && n.bundled ? " · <b>앱 안에 포함</b> (인터넷 없이도 열림)" : ""}<br>
       앱(APK): ${n ? `<b>${esc(String(n.app))}</b> · Android SDK ${esc(String(n.sdk))} · ${esc(String(n.model))}` : "<b>아님</b> (브라우저에서 실행 중)"}
-      <div class="desc" style="margin:6px 0 0">웹앱·화면 파일은 인터넷으로 저절로 바뀌고, 앱(APK)은 새 파일을 설치해야 바뀌어요.</div>
+      <div class="desc" style="margin:6px 0 0">${n && n.bundled ? "화면 파일이 앱 안에 들어 있어요 — 앱(APK)을 업데이트하면 화면도 같이 바뀌어요." : "웹앱·화면 파일은 인터넷으로 저절로 바뀌고, 앱(APK)은 새 파일을 설치해야 바뀌어요."}</div>
       <div class="desc" id="vstat" style="margin:4px 0 0"></div>
       <div id="appupd">${appUpdateHtml()}</div>
       <div class="desc" data-appupd-msg style="margin:4px 0 0"></div>`;
