@@ -7,6 +7,10 @@
 <meta name="description" content="망각 곡선 기반 영단어 복습장 (오프라인 동작)">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14161a" media="(prefers-color-scheme: dark)">
+<script>
+  // 화면 모드를 화면이 그려지기 전에 적용 (깜빡임 방지). 저장 위치: 이 기기 localStorage "sv_theme"
+  try { var t = localStorage.getItem("sv_theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -20,8 +24,9 @@
   --radius: 14px; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
   color-scheme: light;
 }
+/* 화면 모드 (v4.15): 시스템 = 폰 설정 따라감 / html[data-theme="light"|"dark"] = 앱에서 고정 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #14161a; --surface: #1d2025; --surface-2: #262a31; --border: #30353d;
     --text: #e8eaed; --text-2: #a9b0ba; --text-3: #7b838e;
     --accent: #5b8def; --accent-ink: #0d1320; --accent-soft: #1f2b44;
@@ -29,6 +34,14 @@
     --relearn: #a78bfa; --relearn-soft: #2a2242; --due: #fbbf24; --due-soft: #3a2e12;
     --shadow: none; color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #14161a; --surface: #1d2025; --surface-2: #262a31; --border: #30353d;
+    --text: #e8eaed; --text-2: #a9b0ba; --text-3: #7b838e;
+    --accent: #5b8def; --accent-ink: #0d1320; --accent-soft: #1f2b44;
+    --good: #4ade80; --good-soft: #17301f; --bad: #fb923c; --bad-soft: #3a2316;
+    --relearn: #a78bfa; --relearn-soft: #2a2242; --due: #fbbf24; --due-soft: #3a2e12;
+    --shadow: none; color-scheme: dark;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; }
@@ -125,7 +138,8 @@ button, input, select { font: inherit; color: inherit; }
 .judge .row2 .btn { min-height: 64px; font-size: 18px; }
 .btn.ok { background: var(--good); color: #fff; border-color: transparent; }
 .btn.no { background: var(--bad); color: #fff; border-color: transparent; }
-@media (prefers-color-scheme: dark) { .btn.ok, .btn.no { color: #111; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.ok, :root:not([data-theme="light"]) .btn.no { color: #111; } }
+:root[data-theme="dark"] .btn.ok, :root[data-theme="dark"] .btn.no { color: #111; }
 .kbd-hint { text-align: center; font-size: 12px; color: var(--text-3); margin-top: 8px; }
 @media (pointer: coarse) { .kbd-hint { display: none; } }
 

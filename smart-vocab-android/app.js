@@ -164,7 +164,7 @@
   });
 
   function render() {
-    ({ home: renderHome, test: renderTest, result: renderResult, manage: renderManage, data: renderData, paste: renderPaste, cloze: renderCloze })[S.screen]();
+    ({ home: renderHome, test: renderTest, result: renderResult, drillsetup: renderDrillSetup, drillresult: renderDrillResult, manage: renderManage, data: renderData, paste: renderPaste, cloze: renderCloze })[S.screen]();
     persistUI();
   }
 
@@ -181,7 +181,8 @@
         v: 1, screen: S.screen, scroll: Math.round(window.scrollY || 0),
         manage: { q: S.manage.q, sort: S.manage.sort, limit: S.manage.limit },
         test: t ? { queue: ids(t.queue), idx: t.idx, wrong: ids(t.wrong), practice: !!t.practice, pq: ids(t.pq),
-                    attempts: t.attempts || 0, step: t.step, input: t.input || "", stopped: !!t.stopped } : null,
+                    attempts: t.attempts || 0, step: t.step, input: t.input || "", stopped: !!t.stopped,
+                    drill: !!t.drill, dw: t.dw || null, first: t.first || null, total: t.total || 0 } : null,
         paste: { text: P.text, preview: P.preview ? P.preview.rows.map((r) => [r.on ? 1 : 0, r.kind === "new" ? r.w.meaning : null]) : null },
       }));
     } catch (e) { /* 저장 못 해도 앱 동작에는 영향 없음 */ }
@@ -214,6 +215,7 @@
           queue: pick(qIds), idx: qIds.slice(0, idx).filter((id) => byId.has(id)).length,  // 없어진 단어가 있어도 위치 보정
           wrong: pick(t.wrong), practice: !!t.practice, pq: pick(t.pq), attempts: parseInt(t.attempts, 10) || 0,
           step: t.step === "judge" ? "judge" : "ask", input: String(t.input || ""), stopped: !!t.stopped,
+          drill: !!t.drill, dw: t.dw && typeof t.dw === "object" ? t.dw : {}, first: Array.isArray(t.first) ? t.first : [], total: parseInt(t.total, 10) || 0,
         };
         const T = S.test;
         if (!T.queue.length || (T.practice && !T.pq.length)) { S.test = null; screen = "home"; }
@@ -229,7 +231,8 @@
         pv.restored = true; S.paste.preview = pv;
       }
     }
-    if (!["test", "result", "manage", "data", "paste"].includes(screen)) return null;
+    if (screen === "drillresult") screen = "home";
+    if (!["test", "result", "manage", "data", "paste", "drillsetup"].includes(screen)) return null;
     return { screen, scroll: +u.scroll || 0 };
   }
 
@@ -286,6 +289,8 @@
         <button class="btn" id="cloze">📝 빈칸 연습 <span class="sub">예문 ${clozeCandidates().length}개 · 기록 미반영</span></button>
       </div>
 
+      ${drillHomeHtml()}
+
       <div class="section-label">관리</div>
       <button class="btn soft" data-go="paste" style="margin-bottom:10px">📋 붙여넣기로 단어 추가</button>
       <div class="row2">
@@ -300,6 +305,7 @@
       S.testCount = Math.max(1, (parseInt($count.value, 10) || 0) + +b.dataset.step); $count.value = S.testCount;
     }));
     qs("#cloze").addEventListener("click", () => { S.testCount = Math.max(1, parseInt($count.value, 10) || 1); startCloze(); });
+    bindDrillHome();
     $app.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       S.testCount = Math.max(1, parseInt($count.value, 10) || 1); startTest(b.dataset.mode);
     }));
@@ -383,8 +389,8 @@
     const t = S.test;
     if (t.practice) {
       return `<div class="topbar"><button class="icon-btn" id="stop">✕ 그만</button>
-        <span class="practice-tag">다시 풀기 · 기록 미반영</span><span style="flex:1"></span>
-        <span class="counter">남은 ${t.pq.length}개</span></div>`;
+        <span class="practice-tag">${t.drill ? "🏋️ 훈련" : "다시 풀기"} · 기록 미반영</span><span style="flex:1"></span>
+        <span class="counter">남은 ${t.pq.length}${t.drill && t.total ? ` / ${t.total}` : "개"}${t.drill ? ` · 시도 ${t.attempts}` : ""}</span></div>`;
     }
     const pct = Math.round((t.idx / t.queue.length) * 100);
     return `<div class="topbar"><button class="icon-btn" id="stop">✕ 중단</button>
@@ -538,6 +544,12 @@
       if (t.practice) {
         t.attempts++; C.applyPractice(w, correct);
         t.pq.shift(); if (!correct) t.pq.push(w);
+        if (t.drill) {                // v4.16 훈련: 단어별 틀린 횟수·한 번에 맞힌 단어 기록 + 앱을 꺼도 이어서 하도록 저장
+          t.dw = t.dw || {}; t.first = t.first || [];
+          if (!correct) t.dw[w.id] = (t.dw[w.id] || 0) + 1;
+          else if (!t.dw[w.id] && !t.first.includes(w.id)) t.first.push(w.id);
+          saveDrill();
+        }
       } else {
         const wasNew = (w.test_cnt || 0) === 0;
         C.applyAnswer(w, correct, today());
@@ -557,6 +569,7 @@
 
   async function stopTest() {
     const t = S.test;
+    if (t.drill) { saveDrill(); toast("훈련을 멈췄어요 · 홈에서 이어서 할 수 있어요", 2500); S.test = null; return go("home"); }
     if (t.practice) return finishPractice(false);
     if (await confirmBox("테스트 중단", `여기서 그만할까요?\n지금까지 푼 ${t.idx}문제의 기록은 이미 저장되어 있습니다.`, "그만하기", "계속 풀기")) {
       if (t.wrong.length) { S.screen = "result"; t.stopped = true; render(); } else go("home");
@@ -565,8 +578,123 @@
 
   function finishPractice(completed) {
     const t = S.test;
+    if (t.drill) return finishDrill();
     if (completed) toast(`모두 맞혔습니다! (총 ${t.attempts}번 풀이, 기록 미반영)`, 3000);
     S.test = null; go("home");
+  }
+
+  // ─────────────────────────────────────────
+  // 훈련 (v4.16) — 단어 수·고르는 방식을 정해 맞을 때까지 반복. 학습 기록·복습 일정은 그대로 (다시 풀기와 같음: 틀리면 집중도만 +1)
+  //  진행 상황은 meta.drill에 한 문제마다 저장 → 앱을 꺼도 홈에서 이어서
+  //  훈련함(meta.drillBox): 테스트 결과에서 넣은 단어. 훈련함으로 시작한 훈련을 끝까지 하면 그 단어들은 훈련함에서 빠짐
+  // ─────────────────────────────────────────
+  const DRILL_SRCS = [["box", "훈련함 (테스트에서 넣은 단어)"], ["high_error", "오답률 높은 순"], ["recent_wrong", "오답 있는 단어 (최근 공부순)"],
+    ["relearn", "재학습 중"], ["due", "오늘 복습할 단어"], ["random", "무작위"], ["list", "단어 관리 목록 그대로"]];
+  function drillOpt() { return Object.assign({ src: (S.meta.drillBox || []).length ? "box" : "high_error", count: 20 }, S.meta.drillOpt || {}); }
+  function drillPool(src) {
+    const t = today(), byId = new Map(S.words.map((w) => [w.id, w]));
+    switch (src) {
+      case "box": return (S.meta.drillBox || []).map((id) => byId.get(id)).filter(Boolean);
+      case "high_error": return C.pickHighErrorWords(S.words);
+      case "recent_wrong": return S.words.filter((w) => (w.wrong_cnt || 0) > 0).sort((a, b) => (b.last_tested || "").localeCompare(a.last_tested || ""));
+      case "relearn": return S.words.filter((w) => (w.relearn || 0) > 0);
+      case "due": return S.words.filter((w) => C.isReviewDue(w, t));
+      case "random": return shuffle(S.words.slice());
+      case "list": return filteredWords();
+      default: return [];
+    }
+  }
+  function saveDrill() {
+    const t = S.test; if (!t || !t.drill) return;
+    S.meta.drill = { ids: t.pq.map((w) => w.id), total: t.total, attempts: t.attempts, dw: t.dw || {}, first: t.first || [],
+      src: t.src || "", srcIds: t.srcIds || [], started: t.started || C.nowStr() };
+    saveMeta();
+  }
+  function savedDrill() {
+    const d = S.meta.drill; if (!d || !Array.isArray(d.ids)) return null;
+    const byId = new Map(S.words.map((w) => [w.id, w]));
+    const words = d.ids.map((id) => byId.get(id)).filter(Boolean);
+    return words.length ? { d, words } : null;
+  }
+  function drillHomeHtml() {
+    const sv = savedDrill(), boxN = (S.meta.drillBox || []).filter((id) => S.words.some((w) => w.id === id)).length;
+    return `<div class="section-label">훈련 <span style="font-weight:400">· 맞을 때까지 반복 · 기록 미반영</span></div>
+      ${sv ? `<div class="data-info" style="margin-bottom:10px">풀던 훈련이 있어요 · 남은 단어 <b>${sv.words.length}</b> / ${sv.d.total || sv.words.length} · 시도 ${sv.d.attempts || 0}번
+        <div class="row2" style="margin-top:10px"><button class="btn primary" id="dresume">▶ 이어서</button><button class="btn" id="ddrop">버리기</button></div></div>`
+           : `<button class="btn" id="dstart">🏋️ 훈련 시작 <span class="sub">훈련함 ${boxN}개</span></button>`}`;
+  }
+  function bindDrillHome() {
+    const st = qs("#dstart"); st && st.addEventListener("click", () => go("drillsetup"));
+    const rs = qs("#dresume"); rs && rs.addEventListener("click", resumeDrill);
+    const dp = qs("#ddrop"); dp && dp.addEventListener("click", async () => {
+      if (!(await confirmBox("훈련 버리기", "풀던 훈련을 지울까요? (학습 기록과는 상관없어요)", "버리기", "취소"))) return;
+      delete S.meta.drill; saveMeta(); render();
+    });
+  }
+  function renderDrillSetup() {
+    const o = drillOpt();
+    $app.innerHTML = `
+      <div class="topbar"><button class="icon-btn" data-go="home">← 홈</button><h1>훈련</h1></div>
+      <p class="desc" style="margin-top:0">고른 단어를 <b>모두 맞힐 때까지</b> 반복해요. 틀린 단어는 뒤에 다시 나와요. 학습 기록·복습 일정은 그대로예요. 중간에 꺼도 홈에서 이어서 할 수 있어요.</p>
+      <label class="field"><span>고르는 방식</span>
+        <select id="dsrc" class="lsel">${DRILL_SRCS.map(([k, l]) => `<option value="${k}" ${k === o.src ? "selected" : ""}>${l} (${drillPool(k).length}개)</option>`).join("")}</select></label>
+      <div class="stepper" style="margin-top:12px"><div><div>단어 수</div><div class="hint" id="dhint"></div></div>
+        <div class="ctl"><button data-dstep="-5" aria-label="줄이기">−</button>
+          <input id="dcount" type="number" inputmode="numeric" min="1" value="${o.count}" aria-label="단어 수">
+          <button data-dstep="5" aria-label="늘리기">+</button></div></div>
+      ${(S.meta.drillBox || []).length ? `<button class="btn small" id="dclear" style="margin-top:10px">훈련함 비우기 (${(S.meta.drillBox || []).length}개)</button>` : ""}
+      <button class="btn primary" id="dgo" style="margin-top:16px">🏋️ 시작</button>`;
+    bindGo();
+    const $src = qs("#dsrc"), $n = qs("#dcount");
+    const save = () => { S.meta.drillOpt = { src: $src.value, count: Math.max(1, parseInt($n.value, 10) || 1) }; saveMeta(); hint(); };
+    const hint = () => { const n = drillPool($src.value).length; qs("#dhint").textContent = n ? `이 방식으로 고를 수 있는 단어 ${n}개` : "고를 수 있는 단어가 없어요"; };
+    $src.addEventListener("change", save); $n.addEventListener("change", save);
+    $app.querySelectorAll("[data-dstep]").forEach((b) => b.addEventListener("click", () => { $n.value = Math.max(1, (parseInt($n.value, 10) || 0) + +b.dataset.dstep); save(); }));
+    const cl = qs("#dclear"); cl && cl.addEventListener("click", async () => {
+      if (!(await confirmBox("훈련함 비우기", "훈련함의 단어 목록만 비워요. 단어장과 학습 기록은 그대로예요.", "비우기", "취소"))) return;
+      S.meta.drillBox = []; saveMeta(); render();
+    });
+    qs("#dgo").addEventListener("click", () => { save(); startDrill(); });
+    hint();
+  }
+  function startDrill() {
+    const o = drillOpt(), pool = drillPool(o.src);
+    if (!pool.length) return alertBox("훈련", o.src === "box" ? "훈련함이 비어 있어요. 테스트 결과 화면에서 틀린 단어를 넣을 수 있어요." : "이 방식으로 고를 수 있는 단어가 없어요.");
+    const words = pool.slice(0, Math.min(o.count, pool.length));
+    S.test = { queue: words.slice(), idx: 0, wrong: [], practice: true, drill: true, pq: shuffle(words.slice()), attempts: 0, step: "ask", input: "",
+      total: words.length, dw: {}, first: [], src: o.src, srcIds: words.map((w) => w.id), started: C.nowStr() };
+    saveDrill(); go("test");
+  }
+  function resumeDrill() {
+    const sv = savedDrill(); if (!sv) { delete S.meta.drill; saveMeta(); return render(); }
+    const d = sv.d;
+    S.test = { queue: sv.words.slice(), idx: 0, wrong: [], practice: true, drill: true, pq: sv.words, attempts: d.attempts || 0, step: "ask", input: "",
+      total: d.total || sv.words.length, dw: d.dw || {}, first: d.first || [], src: d.src || "", srcIds: d.srcIds || [], started: d.started };
+    go("test");
+  }
+  function finishDrill() {
+    const t = S.test;
+    S.drillDone = { total: t.total, attempts: t.attempts, first: (t.first || []).length, dw: t.dw || {} };
+    const d = S.meta.drill || {}, src = t.src || d.src, srcIds = (t.srcIds && t.srcIds.length ? t.srcIds : d.srcIds) || [];   // 새로고침으로 복원된 경우 대비
+    if (src === "box") {                      // 훈련함으로 한 훈련을 끝까지 했으면 그 단어들은 훈련함에서 뺌
+      const done = new Set(srcIds); S.meta.drillBox = (S.meta.drillBox || []).filter((id) => !done.has(id));
+    }
+    delete S.meta.drill; saveMeta();
+    S.test = null; go("drillresult");
+  }
+  function renderDrillResult() {
+    const r = S.drillDone; if (!r) { S.screen = "home"; return render(); }
+    const byId = new Map(S.words.map((w) => [w.id, w]));
+    const hard = Object.entries(r.dw).sort((a, b) => b[1] - a[1]).map(([id, n]) => [byId.get(id), n]).filter(([w]) => w).slice(0, 10);
+    $app.innerHTML = `
+      <div class="topbar"><h1>훈련 끝</h1></div>
+      <div class="score"><div class="big">${r.total}<span>개 모두 맞힘</span></div>
+        <div class="cap">총 ${r.attempts}번 풀이 · 한 번에 맞힌 단어 ${r.first}개 · 기록 미반영</div></div>
+      ${hard.length ? `<div class="section-label">많이 틀린 단어</div>
+        <div class="list wrong-list">${hard.map(([w, n]) => `<div class="item"><div class="w">${esc(w.word)} <small style="color:var(--text-3)">${n}번 틀림</small></div><div class="m">${esc(w.meaning)}</div></div>`).join("")}</div>` : `<div class="empty">한 번도 안 틀렸어요 🎉</div>`}
+      <div class="stack" style="margin-top:16px"><button class="btn primary" id="dagain">🏋️ 한 번 더</button><button class="btn" id="dhome">홈으로</button></div>`;
+    qs("#dagain").addEventListener("click", () => { S.drillDone = null; go("drillsetup"); });
+    qs("#dhome").addEventListener("click", () => { S.drillDone = null; go("home"); });
   }
 
   // ─────────────────────────────────────────
@@ -582,12 +710,17 @@
         <div class="section-label">틀린 단어 ${t.wrong.length}개 <span style="font-weight:400">· 연속 ${C.RELEARN_REQUIRED}번 맞히면 재학습 졸업</span></div>
         <div class="list wrong-list">${t.wrong.map((w) => `<div class="item"><div class="w">${esc(w.word)}</div><div class="m">${esc(w.meaning)}</div></div>`).join("")}</div>
         <div class="stack" style="margin-top:16px">
-          <button class="btn primary" id="retry">🔁 틀린 것만 다시 풀기 (${t.wrong.length}개)</button>
+          <button class="btn primary" id="tobox">🏋️ 틀린 단어를 훈련함에 넣기 (${t.wrong.length}개)</button>
           <button class="btn" id="home">홈으로</button>
         </div>` : `
         <div class="empty">모두 맞혔어요 🎉</div>
         <button class="btn primary" id="home">홈으로</button>`}`;
-    const r = qs("#retry"); r && r.addEventListener("click", startPractice);
+    const tb = qs("#tobox");
+    tb && tb.addEventListener("click", () => {
+      const box = new Set(S.meta.drillBox || []), before = box.size;
+      t.wrong.forEach((w) => box.add(w.id)); S.meta.drillBox = [...box]; saveMeta();
+      tb.disabled = true; tb.textContent = `훈련함에 넣었어요 (새로 ${box.size - before}개 · 훈련함 ${box.size}개)`;
+    });
     qs("#home").addEventListener("click", () => { S.test = null; go("home"); });
   }
 
@@ -748,8 +881,11 @@
 
   /** 뜻을 쉼표·빗금 등으로 나눈 조각 (공백 제거, 2글자 이상) — 뜻이 겹치는 단어를 선택지에서 빼는 데 씀 */
   function meaningTokens(w) {
-    return new Set(String(w.meaning || "").split(/[,/;·|()\[\]]+/).map((t) => t.replace(/\s+/g, "")).filter((t) => t.length >= 2));
+    // v4.13.1: [형용사] 같은 품사 표시는 빼고 비교 (안 빼면 같은 품사끼리 전부 '뜻 겹침'으로 걸러짐)
+    return new Set(String(w.meaning || "").replace(/\[[^\]]*\]/g, " ").split(/[,/;·|()\[\]]+/).map((t) => t.replace(/\s+/g, "")).filter((t) => t.length >= 2));
   }
+  /** 뜻에 붙은 품사 표시들: "[동사] 버리다; [명사] 방종" → {동사, 명사} */
+  function posTags(w) { return new Set((String(w.meaning || "").match(/\[([^\]]+)\]/g) || []).map((t) => t.slice(1, -1).trim())); }
   const pairKey = (a, b) => [a.word, b.word].sort().join("|");
 
   function startCloze() {
@@ -767,7 +903,12 @@
       const wm = meaningTokens(w);
       const ok = (x) => x && !used.has(x.word) && !sentence.includes(x.word) && !linked.has(x.word)
         && !avoid.has(pairKey(w, x)) && ![...meaningTokens(x)].some((t) => wm.has(t));
-      const pool = shuffle(S.words.filter(ok));
+      // v4.13.1: 오답은 정답과 같은 품사([형용사] 등)에서 먼저 고름 → 모자라면 다른 품사로 채움
+      const wp = posTags(w);
+      const all = S.words.filter(ok);
+      const same = wp.size ? shuffle(all.filter((x) => [...posTags(x)].some((t) => wp.has(t)))) : [];
+      const sameSet = new Set(same);
+      const pool = shuffle(all.filter((x) => !sameSet.has(x))).concat(same);   // pop()은 뒤에서부터 → 같은 품사가 먼저
       while (opts.length < 4 && pool.length) { const x = pool.pop(); if (!used.has(x.word)) { opts.push(x); used.add(x.word); } }
       if (opts.length < 4) {   // 단어장이 작아 모자랄 때만: 뜻 겹침 조건을 풀고 채움 (동의어·표시한 짝은 계속 뺌)
         const syn = new Set(C.splitList(w.synonyms).map((t) => t.toLowerCase()));
@@ -869,7 +1010,7 @@
     const m = Math.ceil(ms / 60000);
     return m < 60 ? `약 ${m}분` : `약 ${Math.floor(m / 60)}시간 ${m % 60}분`;
   };
-  function listenOpt() { return Object.assign({ set: "list", order: "list", count: 50, ex: 0, rate: 1, loop: 0 }, S.meta.listen || {}); }
+  function listenOpt() { return Object.assign({ set: "list", order: "list", count: 50, ex: 0, rate: 1, loop: 0, hide: 1 }, S.meta.listen || {}); }
   function listenPool(o) {
     const t = today();
     const f = { due: (w) => C.isReviewDue(w, t), relearn: (w) => (w.relearn || 0) > 0, wrong: (w) => (w.wrong_cnt || 0) > 0, new: (w) => (w.test_cnt || 0) === 0 }[o.set];
@@ -939,7 +1080,7 @@
       const st = Voice.state(), pl = qs(".lplayer", body);
       if (playing(st)) { if (pl) updatePlayer(body, st); else draw(); }
       else if (pl) draw();
-    }, 1000);
+    }, 300);   // v4.14: 뜻이 읽히는 순간 바로 보이도록 자주 확인 (앱 상태 읽기만, 가벼움)
   }
 
   function drawSetup(body, redraw) {
@@ -954,6 +1095,7 @@
       <div class="lrow"><span>예문</span><div class="seg" id="lex"><button type="button" data-v="0">끄기</button><button type="button" data-v="1">예문+해석</button></div></div>
       <div class="lrow"><span>속도</span><div class="seg" id="lrate"><button type="button" data-v="0.8">0.8</button><button type="button" data-v="0.9">0.9</button><button type="button" data-v="1">1.0</button><button type="button" data-v="1.1">1.1</button></div></div>
       <label class="lrow"><span>끝나면 처음부터 다시</span><input type="checkbox" id="lloop" class="lchk" ${o.loop ? "checked" : ""}></label>
+      <label class="lrow"><span>뜻 가리기 <small>(뜻을 읽어 줄 때 보임)</small></span><input type="checkbox" id="lhide" class="lchk" ${o.hide ? "checked" : ""}></label>
       <div class="lest" id="lest"></div>
       <button class="btn primary" id="lgo" ${native ? "" : "disabled"}>▶ 듣기 시작</button>
       <p class="desc">화면을 꺼도 계속 읽어요 · 이어폰 한 번 = 멈춤/재생, 두 번 = 다음 · 학습 기록에는 반영되지 않아요.</p>`;
@@ -980,6 +1122,7 @@
     $cnt.addEventListener("change", () => { if (!(parseInt($cnt.value, 10) > 0)) update(); });
     qs("#lall", body).addEventListener("click", () => { o.count = 0; save(); update(); });
     qs("#lloop", body).addEventListener("change", (e) => { o.loop = e.target.checked ? 1 : 0; save(); });
+    qs("#lhide", body).addEventListener("change", (e) => { o.hide = e.target.checked ? 1 : 0; save(); });
     qs("#lgo", body).addEventListener("click", () => {
       const words = listenPick(o, true);
       if (!words.length) return toast("들을 단어가 없어요");
@@ -1005,13 +1148,20 @@
     qs("#pnext", body).addEventListener("click", () => ctl("next"));
     qs("#pplay", body).addEventListener("click", () => ctl(Voice.state().playing ? "pause" : "resume"));
     qs("#pstop", body).addEventListener("click", () => { window.SVNative.control("stop"); setTimeout(redraw, 500); });
+    qs("#pm", body).addEventListener("click", () => { peekIdx = lastIdx; updatePlayer(body, Voice.state()); });   // 가린 뜻 눌러서 미리 보기
     updatePlayer(body, st);
   }
+  // v4.14: 뜻 가리기 — 단어(영어)를 읽는 동안은 가리고, 뜻(한국어)을 읽기 시작하면 보임 (part 0 = 단어, 1 = 뜻)
+  let lastIdx = -1, peekIdx = -2;
   function updatePlayer(body, st) {
     const pw = qs("#pw", body); if (!pw) return;
     const total = st.total || 0, pos = st.finished ? total : Math.min(total, (st.idx || 0) + 1);
     pw.textContent = st.title || (st.ttsReady ? "" : "준비 중…");
-    qs("#pm", body).textContent = st.sub || "";
+    const idx = st.idx || 0; if (idx !== lastIdx) { lastIdx = idx; }
+    const pm = qs("#pm", body), hide = !!listenOpt().hide && st.sub;
+    const show = !hide || st.finished || (st.part || 0) >= 1 || peekIdx === idx;
+    pm.textContent = show ? (st.sub || "") : "뜻 보기";
+    pm.classList.toggle("m-mask", !show);
     qs("#pbar", body).style.width = `${total ? Math.round(((st.finished ? total : st.idx || 0) / total) * 100) : 0}%`;
     qs("#ppos", body).textContent = st.finished ? `다 들었어요 · ${total}개` : `${pos} / ${total}`;
     qs("#ptime", body).textContent = mmss(st.playedMs || 0) + (S.listenEst ? ` / ${fmtDur(S.listenEst)}` : "");
@@ -1377,6 +1527,16 @@
     } catch (e) { st.textContent = "인터넷 연결을 확인해 주세요"; }
   }
 
+  // ── 화면 모드 (v4.15): system / light / dark — index.html 맨 위 스크립트가 시작할 때 먼저 적용
+  function getTheme() { try { const t = localStorage.getItem("sv_theme"); return t === "light" || t === "dark" ? t : "system"; } catch (e) { return "system"; } }
+  function setTheme(t) {
+    try { if (t === "system") localStorage.removeItem("sv_theme"); else localStorage.setItem("sv_theme", t); } catch (e) { }
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    else document.documentElement.removeAttribute("data-theme");
+    const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.setAttribute("content", dark ? "#14161a" : "#f6f7f9"); m.removeAttribute("media"); });
+  }
+
   function renderData() {
     if (S.screen !== "data") return;
     const share = canShareFiles();
@@ -1423,6 +1583,13 @@
         <div class="desc" style="margin:4px 0 0">비우면 꺼짐 · 단어 추가는 그대로 되고, 테스트에 처음 나오는 새 단어 수만 하루 한도까지 · 오늘 푼 새 단어 ${newToday()}개</div>
       </div>
 
+      <div class="section-label">화면 모드</div>
+      <div class="data-info">
+        <div class="seg" id="theme" style="width:100%">${[["system", "시스템"], ["light", "라이트"], ["dark", "다크"]].map(([v, l]) =>
+          `<button type="button" data-v="${v}" class="${getTheme() === v ? "on" : ""}" style="flex:1">${l}</button>`).join("")}</div>
+        <div class="desc" style="margin:6px 0 0">시스템: 폰의 다크 모드 설정을 따라가요 · 이 기기에만 저장돼요</div>
+      </div>
+
       <div class="section-label">PC에서 쓰기</div>
       <p class="desc" style="margin-top:0">PC의 Chrome에서 <b>${esc(location.origin + location.pathname.replace(/index\.html$/, ""))}</b> 를 열면 같은 웹앱을 쓸 수 있어요 (주소창 오른쪽 설치 버튼으로 앱처럼 설치 가능). PC와 폰은 단어장이 따로 저장되니 <b>JSON 백업 → 다른 쪽에서 합치기</b>로 맞춰 주세요. 기존 PC 프로그램의 vocab_data.json도 합치기로 가져올 수 있어요.</p>
 
@@ -1444,6 +1611,7 @@
     const sh = qs("#shj"); sh && sh.addEventListener("click", () => exportJson("share"));
     qs("#imj").addEventListener("click", importJson);
     qs("#mrj").addEventListener("click", mergeJson);
+    qs("#theme").addEventListener("click", (e) => { const b = e.target.closest("[data-v]"); if (!b) return; setTheme(b.dataset.v); renderData(); });
     qs("#autob").addEventListener("change", (e) => { S.meta.autoBackup = e.target.checked; saveMeta(); if (e.target.checked) { autoBackup(true); renderData(); } });
     qs("#nlim").addEventListener("change", (e) => { const n = Math.max(0, parseInt(e.target.value, 10) || 0); S.meta.newLimit = n; saveMeta(); e.target.value = n || ""; toast(n ? `하루 새 단어 ${n}개까지` : "새 단어 한도 끔"); });
     qs("#imc").addEventListener("click", importCsv);
@@ -1491,6 +1659,7 @@
     // 날짜가 바뀐 채로 앱을 다시 열면 통계 갱신
     document.addEventListener("visibilitychange", () => { if (document.hidden) return; autoBackup(); if (S.screen === "home") render(); });
     autoBackup();
+    if (getTheme() !== "system") setTheme(getTheme());   // 상단 막대 색(theme-color)도 고른 모드에 맞춤
     registerSW();
     checkAppOnBoot();
   }
